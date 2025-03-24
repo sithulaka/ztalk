@@ -1,36 +1,31 @@
 from zeroconf import ServiceInfo, Zeroconf, ServiceBrowser, ServiceListener
 import socket
+from typing import Dict
 
 class ServiceDiscovery(ServiceListener):
     def __init__(self, network_manager):
         self.network_manager = network_manager
         self.zeroconf = Zeroconf()
-        self.peers = {}
+        self.peers: Dict[str, tuple] = {}  # {username: (ip, port)}
         self.service_type = "_message._tcp.local."
         self.service_info = None
 
-    def register_service(self, username, port):
-        ip = self.network_manager.get_active_interface_ip()
-        if not ip or ip.startswith('172.17.'):  # Explicitly block Docker IPs
-            raise RuntimeError("Invalid network interface selected")
-            
+    def register_service(self, username: str, port: int):
+        """Register service on all active interfaces"""
+        ips = [socket.inet_aton(ip) for ip in self.network_manager.get_all_active_ips()]
+        
         self.service_info = ServiceInfo(
             self.service_type,
             f"{username}.{self.service_type}",
-            addresses=[socket.inet_aton(ip)],
+            addresses=ips,
             port=port,
-            properties={b'user': username.encode('utf-8')},
+            properties={b'user': username.encode()},
         )
         self.zeroconf.register_service(self.service_info)
+        self.browse_services()
 
-    def update_service(self, zc, type_, name):
-        pass
-
-    def remove_service(self, zc, type_, name):
-        user = name.split('.')[0]
-        if user in self.peers:
-            del self.peers[user]
-            print(f"\n[-] {user} left")
+    def browse_services(self):
+        ServiceBrowser(self.zeroconf, self.service_type, self)
 
     def add_service(self, zc, type_, name):
         info = zc.get_service_info(type_, name)
@@ -40,8 +35,14 @@ class ServiceDiscovery(ServiceListener):
             self.peers[user] = (addr, info.port)
             print(f"\n[+] Discovered {user} at {addr}:{info.port}")
 
-    def browse_services(self):
-        ServiceBrowser(self.zeroconf, self.service_type, self)
+    def remove_service(self, zc, type_, name):
+        user = name.split('.')[0]
+        if user in self.peers:
+            del self.peers[user]
+            print(f"\n[-] {user} left")
+
+    def update_service(self, zc, type_, name):
+        pass
 
     def shutdown(self):
         if self.service_info:
