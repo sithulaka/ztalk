@@ -1,0 +1,29 @@
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Python cache and build files
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# IDE-specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local development files
+.env
+*.log
+*.sqlite3
+
+# macOS files
+.DS_Store
+
+# Testing/coverage
+.coverage
+htmlcov/
