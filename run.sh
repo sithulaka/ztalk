@@ -21,6 +21,7 @@ while read -r requirement; do
     fi
 done < requirements.txt
 
+echo "$USER ALL=(ALL) NOPASSWD: /usr/bin/ip" | sudo tee /etc/sudoers.d/ztalk
 
 # Run the Python script
 echo "Running ztalk..."
