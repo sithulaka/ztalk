@@ -14,12 +14,7 @@ fi
 
 # Check and install only missing dependencies
 echo "Checking dependencies..."
-while read -r requirement; do
-    if ! pip freeze | grep -i "^${requirement}$" >/dev/null 2>&1; then
-        echo "Installing $requirement..."
-        pip install "$requirement" --no-deps
-    fi
-done < requirements.txt
+pip install -r requirement.txt
 
 echo "$USER ALL=(ALL) NOPASSWD: /usr/bin/ip" | sudo tee /etc/sudoers.d/ztalk
 
