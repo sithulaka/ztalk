@@ -8,7 +8,7 @@ from zeroconf import ServiceInfo, Zeroconf, ServiceBrowser, ServiceListener
 
 # Constants for service configuration
 SERVICE_TYPE = "_chat._tcp.local."
-SERVICE_NAME = "MyChatService._chat._tcp.local."
+SERVICE_NAME = "master._chat._tcp.local."
 PORT = 5000
 
 def get_local_ip():
