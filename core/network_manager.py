@@ -48,26 +48,17 @@ class NetworkManager:
         return self.get_active_interface_ip() is not None
 
     def _get_normal_ip(self) -> Optional[str]:
-        """Check all interfaces for existing IPv4 addresses"""
-        try:
-            # Check via socket connection first
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                s.connect(('8.8.8.8', 53))
-                lan_ip = s.getsockname()[0]
-                if lan_ip and not lan_ip.startswith('127.'):
-                    return lan_ip
-        except (socket.error, OSError):
-            pass
-
-        # Fallback: Check all interfaces
-        for interface in netifaces.interfaces():
+        """Check physical interfaces for existing IPv4 addresses"""
+        # Explicitly check known physical interfaces first
+        for interface in ['enP3p49s0', 'enP4p65s0', 'wlP2p33s0']:
             try:
                 addrs = netifaces.ifaddresses(interface).get(netifaces.AF_INET, [])
                 for addr in addrs:
-                    if 'addr' in addr and not addr['addr'].startswith('127.'):
+                    if 'addr' in addr and not addr['addr'].startswith(('127.', '169.254.')):
                         return addr['addr']
             except ValueError:
                 continue
+                
         return None
 
     def _assign_link_local_ip(self) -> Optional[str]:
@@ -94,17 +85,37 @@ class NetworkManager:
             return None
 
     def _find_physical_interface(self) -> Optional[str]:
-        """Find the first physical interface without an IPv4 address"""
+        """Find the first active physical interface without an IPv4 address"""
+        # List of common virtual interface prefixes to exclude
+        VIRTUAL_PREFIXES = ('docker', 'veth', 'br-', 'virbr', 'lo')
+        
         for interface in netifaces.interfaces():
-            # Match common physical interface prefixes
-            if interface.startswith(('en', 'eth', 'wl')):
-                try:
-                    # Skip interfaces that already have an IP
-                    if not netifaces.ifaddresses(interface).get(netifaces.AF_INET):
-                        return interface
-                except ValueError:
+            # Skip virtual interfaces
+            if any(interface.startswith(prefix) for prefix in VIRTUAL_PREFIXES):
+                continue
+                
+            # Check interface flags to ensure it's a physical interface
+            try:
+                flags = netifaces.ifaddresses(interface).get(netifaces.AF_LINK, [{}])[0].get('flags', 0)
+                
+                # Skip interfaces that are not UP or don't have a carrier
+                if not (flags & netifaces.IFF_UP) or (flags & netifaces.IFF_NOARP):
                     continue
+                    
+            except (ValueError, KeyError):
+                continue
+                
+            # Skip interfaces without IPv4 support
+            if netifaces.AF_INET not in netifaces.ifaddresses(interface):
+                continue
+                
+            # Prefer interfaces with actual link (carrier)
+            addrs = netifaces.ifaddresses(interface).get(netifaces.AF_INET, [])
+            if not any(addr.get('addr', '').startswith('169.254') for addr in addrs):
+                return interface
+                
         return None
+
 
     def _interface_monitor(self) -> None:
         """Monitor network interfaces for changes"""

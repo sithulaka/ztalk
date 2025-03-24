@@ -11,8 +11,8 @@ class ServiceDiscovery(ServiceListener):
 
     def register_service(self, username, port):
         ip = self.network_manager.get_active_interface_ip()
-        if not ip:
-            raise RuntimeError("No network interface available")
+        if not ip or ip.startswith('172.17.'):  # Explicitly block Docker IPs
+            raise RuntimeError("Invalid network interface selected")
             
         self.service_info = ServiceInfo(
             self.service_type,

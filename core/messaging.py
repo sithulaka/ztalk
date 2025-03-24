@@ -51,6 +51,14 @@ class UDPMulticast:
                 socket.inet_aton(self.multicast_group) + socket.inet_aton(ip)
             )
             
+        # Explicitly bind to physical interface
+        if self.network_manager.current_interface:
+            self.sock.setsockopt(
+                socket.SOL_SOCKET,
+                socket.SO_BINDTODEVICE,
+                self.network_manager.current_interface.encode()
+            )
+            
         self.thread = threading.Thread(target=self._listen, args=(message_handler,))
         self.thread.start()
 
