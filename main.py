@@ -42,13 +42,17 @@ class BonjourChat:
         class ChatListener(ServiceListener):
             def __init__(self, outer):
                 self.outer = outer
+                self.local_ip = socket.gethostbyname(socket.gethostname())  # Get local IP
 
             def add_service(self, zc, type_, name):
                 info = zc.get_service_info(type_, name)
                 if info:
-                    self.outer.peer_address = socket.inet_ntoa(info.addresses[0])
-                    self.outer.peer_port = info.port
-                    print(f"Discovered peer: {self.outer.peer_address}:{self.outer.peer_port}")
+                    peer_ip = socket.inet_ntoa(info.addresses[0])
+                    # Skip self-discovery
+                    if peer_ip != self.local_ip:  # Only store external peers
+                        self.outer.peer_address = peer_ip
+                        self.outer.peer_port = info.port
+                        print(f"Discovered peer: {peer_ip}:{info.port}")
 
         listener = ChatListener(self)
         browser = ServiceBrowser(self.zeroconf, SERVICE_TYPE, listener)
