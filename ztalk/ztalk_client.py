@@ -12,6 +12,7 @@ class ZTalkClient:
             
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             sock.connect((peer['ip'], peer['port']))
             self.connections[peer['ip']] = sock
             threading.Thread(

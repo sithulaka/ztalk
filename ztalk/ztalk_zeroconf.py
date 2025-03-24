@@ -29,7 +29,10 @@ class ZTalkZeroConf:
         self.service_type = "_ztalk._tcp.local."
         
     def advertise_service(self, name, port):
-        local_ip = socket.gethostbyname(socket.gethostname())
+        local_ip = self.app.local_ip
+        if not local_ip:
+            raise ValueError("Could not determine local IP address")
+        
         self.service_info = ServiceInfo(
             self.service_type,
             f"{name}.{self.service_type}",

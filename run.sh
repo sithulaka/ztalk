@@ -12,8 +12,8 @@ else
     echo "Virtual environment already active"
 fi
 
-# Check if requirements are installed
-if ! pip freeze | grep -q "zeroconf"; then
+# Check if all dependencies are installed
+if ! pip freeze | diff -u - requirements.txt >/dev/null 2>&1; then
     echo "Installing dependencies..."
     pip install -r requirements.txt
 else

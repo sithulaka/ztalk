@@ -1,5 +1,6 @@
 import time
 import socket
+import netifaces
 from ztalk_zeroconf import ZTalkZeroConf
 from ztalk_server import ZTalkServer
 from ztalk_client import ZTalkClient
@@ -11,6 +12,7 @@ class ZTalkApp:
         self.server = None
         self.client = ZTalkClient(self.handle_message)
         self.hostname = socket.gethostname()
+        self.local_ip = self._get_dhcp_ip() or socket.gethostbyname(socket.gethostname())
         
     def start(self, port=5000):
         # Start server
@@ -23,7 +25,7 @@ class ZTalkApp:
         # Start discovery
         self.zt_zeroconf.discover_services()
         
-        print(f"ZTalk started as {self.hostname}. Press Ctrl+C to exit.")
+        print(f"ZTalk started as {self.hostname} ({self.local_ip}). Press Ctrl+C to exit.")
         self._user_interface()
         
     def add_peer(self, peer):
@@ -47,19 +49,32 @@ class ZTalkApp:
     def _user_interface(self):
         try:
             while True:
-                self._print_status()
-                recipient = input("Enter recipient (ALL for broadcast): ")
-                message = input("Enter message: ")
-                
-                if recipient.upper() == "ALL":
-                    self.server.broadcast(f"{self.hostname}: {message}")
-                else:
+                print("\n===== ZTalk Menu =====")
+                print("1. List Connected Devices")
+                print("2. Group Chat")
+                print("3. Private Chat")
+                print("4. Exit")
+                choice = input("Enter your choice: ").strip()
+
+                if choice == '1':
+                    self._print_status()
+                elif choice == '2':
+                    message = input("Enter group message: ")
+                    self.server.broadcast(f"[GROUP] {self.hostname}: {message}")
+                elif choice == '3':
+                    recipient = input("Enter recipient name: ")
+                    message = input("Enter private message: ")
                     peer = self.peers.get(recipient)
                     if peer:
-                        if not self.client.send(peer['ip'], f"{self.hostname}: {message}"):
+                        success = self.client.send(peer['ip'], f"[PRIVATE] {self.hostname}: {message}")
+                        if not success:
                             print(f"Failed to send to {recipient}")
                     else:
                         print("Invalid recipient")
+                elif choice == '4':
+                    break
+                else:
+                    print("Invalid choice")
         except KeyboardInterrupt:
             self.zt_zeroconf.shutdown()
             print("\nZTalk shutdown complete")
@@ -69,6 +84,16 @@ class ZTalkApp:
         for name, peer in self.peers.items():
             print(f"  {name} ({peer['ip']})")
         print("-------------------")
+
+    def _get_dhcp_ip(self):
+        for iface in netifaces.interfaces():
+            addrs = netifaces.ifaddresses(iface)
+            if netifaces.AF_INET in addrs:
+                for addr in addrs[netifaces.AF_INET]:
+                    ip = addr['addr']
+                    if ip.startswith('192.168.77.'):
+                        return ip
+        return None
 
 if __name__ == "__main__":
     app = ZTalkApp()
