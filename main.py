@@ -67,10 +67,8 @@ class UDPListener:
             print(f"\n[Broadcast from {addr[0]}]: {data.decode()}")
 
 def input_thread():
-    while True:
-        time.sleep(0.1)
-        sys.stdout.write('> ')
-        sys.stdout.flush()
+    # Remove this function as we don't need a separate thread for the prompt
+    pass
 
 def main():
     username = input("Enter your username: ")
@@ -109,12 +107,15 @@ def main():
     udp_sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp_sender.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
 
-    # Input handling thread
-    threading.Thread(target=input_thread, daemon=True).start()
+    print("\nAvailable commands:")
+    print("/list - Show connected peers")
+    print("/msg <username> <message> - Send private message")
+    print("/broadcast <message> - Send message to all")
+    print("/quit - Exit program\n")
 
     while True:
         try:
-            command = input().strip()
+            command = input("> ").strip()
             if not command:
                 continue
 
