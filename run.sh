@@ -14,7 +14,7 @@ fi
 
 # Check and install only missing dependencies
 echo "Checking dependencies..."
-pip install -r requirement.txt
+pip install -r requirements.txt
 
 echo "$USER ALL=(ALL) NOPASSWD: /usr/bin/ip" | sudo tee /etc/sudoers.d/ztalk
 
