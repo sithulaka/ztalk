@@ -24,4 +24,4 @@ done < requirements.txt
 
 # Run the Python script
 echo "Running ztalk..."
-python ./ztalk/main.py
+python ./main.py
