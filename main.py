@@ -1,6 +1,6 @@
 import socket
 import threading
-from zeroconf import ServiceInfo, Zeroconf
+from zeroconf import ServiceInfo, Zeroconf, ServiceBrowser, ServiceListener
 import time
 
 # Configuration
@@ -15,15 +15,12 @@ class BonjourChat:
         self.peer_address = None
         self.peer_port = None
         self.running = True
+        self.local_ip = socket.gethostbyname(socket.gethostname())  # Store local IP
 
     def advertise_service(self):
-        """Advertise the chat service on the network."""
         hostname = socket.gethostname()
-        print (hostname)
-        local_ip = socket.gethostbyname(hostname)
-        print(local_ip)
-
-        # Service details
+        local_ip = self.local_ip
+        
         desc = {'version': '1.0'}
         self.service_info = ServiceInfo(
             SERVICE_TYPE,
@@ -36,20 +33,17 @@ class BonjourChat:
         print(f"Advertising service at {local_ip}:{PORT}")
 
     def discover_services(self):
-        """Discover other chat services on the network."""
-        from zeroconf import ServiceBrowser, ServiceListener
-
         class ChatListener(ServiceListener):
             def __init__(self, outer):
                 self.outer = outer
-                self.local_ip = socket.gethostbyname(socket.gethostname())  # Get local IP
+                self.local_ip = outer.local_ip  # Use the parent's local IP
 
             def add_service(self, zc, type_, name):
                 info = zc.get_service_info(type_, name)
                 if info:
                     peer_ip = socket.inet_ntoa(info.addresses[0])
                     # Skip self-discovery
-                    if peer_ip != self.local_ip:  # Only store external peers
+                    if peer_ip != self.local_ip:
                         self.outer.peer_address = peer_ip
                         self.outer.peer_port = info.port
                         print(f"Discovered peer: {peer_ip}:{info.port}")
