@@ -12,13 +12,14 @@ else
     echo "Virtual environment already active"
 fi
 
-# Check if all dependencies are installed
-if ! pip freeze | diff -u - requirements.txt >/dev/null 2>&1; then
-    echo "Installing dependencies..."
-    pip install -r requirements.txt
-else
-    echo "Dependencies already installed"
-fi
+# Check and install only missing dependencies
+echo "Checking dependencies..."
+while read -r requirement; do
+    if ! pip freeze | grep -i "^${requirement}$" >/dev/null 2>&1; then
+        echo "Installing $requirement..."
+        pip install "$requirement" --no-deps
+    fi
+done < requirements.txt
 
 
 # Run the Python script
