@@ -1,3 +1,4 @@
+import socket
 from core.network_manager import NetworkManager
 from core.service_discovery import ServiceDiscovery
 from core.messaging import TCPServer, UDPMulticast
