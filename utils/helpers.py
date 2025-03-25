@@ -11,6 +11,7 @@ def get_user_input(prompt):
 def display_help():
     print("\nAvailable commands:")
     print("/list - Show connected peers")
+    print("/network - Show all devices in unified network")
     print("/msg <username> <message> - Send private message")
     print("/broadcast <message> - Send message to all")
     print("/quit - Exit program")

@@ -1,13 +1,34 @@
 import socket
 import time
 import threading
+import logging
+import platform
+import signal
+import os
+import sys
+from typing import Optional
 from core.network_manager import NetworkManager
 from core.service_discovery import ServiceDiscovery
 from core.messaging import TCPServer, UDPMulticast
 from utils.helpers import get_user_input, display_help
 
+# Configure logging with different levels for different components
+logging.basicConfig(
+    level=logging.INFO,  # Set default level to INFO
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('ztalk.log')
+    ]
+)
+
+# Set specific logger levels
+logging.getLogger('NetworkManager').setLevel(logging.INFO)
+logging.getLogger('asyncio').setLevel(logging.WARNING)
+
 class ZTalkApp:
     def __init__(self):
+        self.logger = logging.getLogger('ZTalkApp')
         self.network_mgr = NetworkManager()
         self.service_discovery = ServiceDiscovery(self.network_mgr)
         self.tcp_server = TCPServer()
@@ -16,13 +37,19 @@ class ZTalkApp:
         self.running = False
         self._network_ready = threading.Event()
         self._network_timeout = 15  # Reduced timeout for quicker feedback
+        self.chat_window: Optional[object] = None  # Type hint for chat window
+        self._input_thread: Optional[threading.Thread] = None
 
     def _network_change_handler(self, interfaces):
         if interfaces:
-            print(f"\nDetected active interfaces: {list(interfaces.keys())}")
-            print(f"IP addresses: {list(interfaces.values())}")
+            self.logger.info(f"Active interfaces: {interfaces}")
+            active_ips = list(interfaces.values())
+            print(f"\nDetected active interfaces:")
+            for iface, ip in interfaces.items():
+                print(f"  - {iface}: {ip}")
             self._network_ready.set()
         else:
+            self.logger.warning("No active network interfaces found!")
             print("\nNo active network interfaces found!")
             self._network_ready.clear()
 
@@ -33,16 +60,17 @@ class ZTalkApp:
             try:
                 print(f"\nInitializing services (attempt {attempt + 1}/{max_retries})...")
                 
-                # Start TCP server
+                # Start TCP server first
                 self.tcp_server.start(self._handle_tcp_message)
                 print(f"TCP server started on port {self.tcp_server.port}")
                 
                 # Register Zeroconf service
-                self.service_discovery.register_service(self.username, self.tcp_server.port)
-                self.service_discovery.browse_services()
-                print("Service discovery initialized")
+                if self.service_discovery.register_service(self.username, self.tcp_server.port):
+                    print("Service discovery initialized")
+                else:
+                    raise Exception("Failed to register service")
                 
-                # Start UDP multicast
+                # Start UDP multicast last
                 self.udp_multicast.start(self._handle_udp_message)
                 print("UDP multicast started")
                 
@@ -50,8 +78,11 @@ class ZTalkApp:
                 
             except Exception as e:
                 print(f"Service initialization failed: {e}")
+                # Clean up on failure
+                self.tcp_server.stop()
+                self.service_discovery.shutdown()
                 if attempt < max_retries - 1:
-                    time.sleep(2)  # Wait before retrying
+                    time.sleep(2)
                     continue
                 return False
 
@@ -87,7 +118,19 @@ class ZTalkApp:
                     print("\nConnected peers:")
                     for user in self.service_discovery.peers:
                         print(f" - {user}")
-                        
+                
+                elif command == "/network":
+                    print("\nUnified Network View:")
+                    network = self.network_mgr.get_unified_network()
+                    if network:
+                        print("\nDiscovered devices:")
+                        for ip, info in network.items():
+                            print(f" - {ip} ({info['hostname']})")
+                            print(f"   Type: {info['type']}")
+                            print(f"   Interface: {info['interface']}")
+                    else:
+                        print("No devices found in network")
+                
                 elif command.startswith("/msg "):
                     parts = command.split(maxsplit=2)
                     if len(parts) < 3:
@@ -151,9 +194,9 @@ class ZTalkApp:
         print("\nZTalk successfully started!")
         print("Type /help for available commands\n")
         
-        # Start input thread
-        input_thread = threading.Thread(target=self._input_handler, daemon=True)
-        input_thread.start()
+        # Start input thread with proper reference
+        self._input_thread = threading.Thread(target=self._input_handler, daemon=True)
+        self._input_thread.start()
 
         # Main loop
         try:
@@ -162,26 +205,52 @@ class ZTalkApp:
         except KeyboardInterrupt:
             self.shutdown()
             
-        input_thread.join()
+        if self._input_thread:
+            self._input_thread.join(timeout=1.0)
 
     def shutdown(self):
-        if not self.running:
-            return
+        """Shut down all network services and close the application"""
+        if not hasattr(self, 'running'):
+            self.running = True
             
-        self.running = False
-        print("\nShutting down services...")
+        self.running = False  # Set this first to stop threads
+        print("Shutting down ZTalk application...")
         
-        # Stop network manager first
-        self.network_mgr.stop()
+        # Stop services in reverse order
+        try:
+            if hasattr(self, 'udp_multicast'):
+                print("Stopping UDP multicast...")
+                self.udp_multicast.stop()
+        except Exception as e:
+            print(f"Error stopping UDP multicast: {e}")
+            
+        try:
+            if hasattr(self, 'tcp_server'):
+                print("Stopping TCP server...")
+                self.tcp_server.stop()
+        except Exception as e:
+            print(f"Error stopping TCP server: {e}")
+            
+        try:
+            if hasattr(self, 'service_discovery'):
+                print("Shutting down service discovery...")
+                self.service_discovery.shutdown()
+        except Exception as e:
+            print(f"Error shutting down service discovery: {e}")
+            
+        try:
+            if hasattr(self, 'network_mgr'):
+                print("Stopping network manager...")
+                self.network_mgr.stop()
+        except Exception as e:
+            print(f"Error stopping network manager: {e}")
+            
+        # Wait for threads to finish
+        print("Waiting for threads to finish...")
+        time.sleep(1.0)  # Give more time for threads to clean up
         
-        # Stop services in reverse initialization order
-        self.udp_multicast.stop()
-        self.tcp_server.stop()
-        self.service_discovery.shutdown()
-        
-        # Wait a brief moment for threads to finish
-        time.sleep(0.5)
-        print("All services stopped. Goodbye!\n")
+        print("Shutdown complete.")
+        sys.exit(0)  # Use clean exit instead of force kill
 
 if __name__ == "__main__":
     app = ZTalkApp()
