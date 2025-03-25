@@ -1,29 +1,68 @@
 import socket
 import time
 import threading
+import argparse
+import platform
+import sys
+import os
 from core.network_manager import NetworkManager
 from core.service_discovery import ServiceDiscovery
 from core.messaging import TCPServer, UDPMulticast
-from utils.helpers import get_user_input, display_help
+from utils.helpers import get_user_input
+from ui import ChatWindow
+
+def parse_arguments():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(description='ZTalk - Cross-platform P2P Chat Application')
+    parser.add_argument('--username', type=str, help='Username to use (skips prompt)')
+    parser.add_argument('--no-gui', action='store_true', help='Run in command-line mode (no GUI)')
+    parser.add_argument('--portable', action='store_true', help='Run in portable mode (data stored in app directory)')
+    return parser.parse_args()
 
 class ZTalkApp:
-    def __init__(self):
+    def __init__(self, args=None):
+        self.args = args or parse_arguments()
         self.network_mgr = NetworkManager()
         self.service_discovery = ServiceDiscovery(self.network_mgr)
         self.tcp_server = TCPServer()
         self.udp_multicast = UDPMulticast(self.network_mgr)
-        self.username = None
+        self.username = self.args.username
         self.running = False
         self._network_ready = threading.Event()
-        self._network_timeout = 15  # Reduced timeout for quicker feedback
+        self._network_timeout = 15
+        self.chat_window = None
+        
+        # Setup app directories for cross-platform use
+        self.setup_app_dirs()
+
+    def setup_app_dirs(self):
+        """Set up application directories for data storage"""
+        system = platform.system()
+        app_name = "ZTalk"
+        
+        if self.args.portable:
+            # Use local directory for portable mode
+            self.app_dir = os.path.abspath(os.path.dirname(sys.argv[0]))
+        else:
+            # Use platform-specific data directories
+            if system == "Windows":
+                self.app_dir = os.path.join(os.environ.get("APPDATA", ""), app_name)
+            elif system == "Darwin":  # macOS
+                self.app_dir = os.path.expanduser(f"~/Library/Application Support/{app_name}")
+            else:  # Linux and other Unix-like systems
+                self.app_dir = os.path.expanduser(f"~/.config/{app_name}")
+                
+        # Create directory if it doesn't exist
+        os.makedirs(self.app_dir, exist_ok=True)
 
     def _network_change_handler(self, interfaces):
         if interfaces:
-            print(f"\nDetected active interfaces: {list(interfaces.keys())}")
-            print(f"IP addresses: {list(interfaces.values())}")
+            if self.chat_window:
+                self.chat_window.add_system_message(f"Network interfaces updated: {list(interfaces.keys())}")
             self._network_ready.set()
         else:
-            print("\nNo active network interfaces found!")
+            if self.chat_window:
+                self.chat_window.add_system_message("No active network interfaces found!")
             self._network_ready.clear()
 
     def _initialize_services(self):
@@ -31,39 +70,47 @@ class ZTalkApp:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                print(f"\nInitializing services (attempt {attempt + 1}/{max_retries})...")
+                if self.chat_window:
+                    self.chat_window.add_system_message(f"Initializing services (attempt {attempt + 1}/{max_retries})...")
                 
                 # Start TCP server
                 self.tcp_server.start(self._handle_tcp_message)
-                print(f"TCP server started on port {self.tcp_server.port}")
                 
                 # Register Zeroconf service
                 self.service_discovery.register_service(self.username, self.tcp_server.port)
                 self.service_discovery.browse_services()
-                print("Service discovery initialized")
                 
                 # Start UDP multicast
                 self.udp_multicast.start(self._handle_udp_message)
-                print("UDP multicast started")
                 
+                if self.chat_window:
+                    self.chat_window.add_system_message("All services initialized successfully!")
                 return True
                 
             except Exception as e:
-                print(f"Service initialization failed: {e}")
+                if self.chat_window:
+                    self.chat_window.add_system_message(f"Service initialization failed: {e}")
                 if attempt < max_retries - 1:
-                    time.sleep(2)  # Wait before retrying
+                    time.sleep(2)
                     continue
                 return False
 
     def _handle_tcp_message(self, ip, message):
-        print(f"\n[Private from {ip}]: {message}")
+        if self.chat_window:
+            self.chat_window.add_message("Private", message)
 
     def _handle_udp_message(self, ip, message):
-        print(f"\n[Broadcast from {ip}]: {message}")
+        if self.chat_window:
+            self.chat_window.add_message("Broadcast", message)
 
     def _send_private_message(self, username, message):
+        # Get username from the chat window if needed
+        if not self.username and self.chat_window:
+            self.username = self.chat_window.username
+            
         if username not in self.service_discovery.peers:
-            print(f"User {username} not found")
+            if self.chat_window:
+                self.chat_window.add_system_message(f"User {username} not found")
             return
             
         ip, port = self.service_discovery.peers[username]
@@ -73,49 +120,15 @@ class ZTalkApp:
                 s.connect((ip, port))
                 s.send(f"[From {self.username}]: {message}".encode())
         except Exception as e:
-            print(f"Failed to send message: {e}")
+            if self.chat_window:
+                self.chat_window.add_system_message(f"Failed to send message: {e}")
             del self.service_discovery.peers[username]
 
-    def _input_handler(self):
-        while self.running:
-            try:
-                command = input("> ").strip()
-                if not command:
-                    continue
-                    
-                if command == "/list":
-                    print("\nConnected peers:")
-                    for user in self.service_discovery.peers:
-                        print(f" - {user}")
-                        
-                elif command.startswith("/msg "):
-                    parts = command.split(maxsplit=2)
-                    if len(parts) < 3:
-                        print("Usage: /msg <username> <message>")
-                        continue
-                    self._send_private_message(parts[1], parts[2])
-                    
-                elif command.startswith("/broadcast "):
-                    message = command[len("/broadcast "):]
-                    self.udp_multicast.send(f"[Broadcast from {self.username}]: {message}")
-                    
-                elif command == "/quit":
-                    self.shutdown()
-                    
-                elif command == "/help":
-                    display_help()
-                    
-                else:
-                    print("Unknown command. Type /help for available commands")
-                    
-            except (KeyboardInterrupt, EOFError):
-                self.shutdown()
-                break
-            except Exception as e:
-                print(f"Input error: {e}")
+    def get_peers(self):
+        return list(self.service_discovery.peers.keys())
 
     def run(self):
-        print("\nStarting ZTalk Application")
+        print("Starting ZTalk Application")
         print("Initializing network monitor...")
         
         # Start network monitoring
@@ -128,61 +141,124 @@ class ZTalkApp:
         # Check current network status
         current_ips = self.network_mgr.get_all_active_ips()
         if current_ips:
-            print(f"\nActive network interfaces found with IPs: {current_ips}")
+            print(f"Active network interfaces found with IPs: {current_ips}")
             self._network_ready.set()
         else:
-            print("\nNo network interfaces with IP addresses detected")
+            print("No network interfaces with IP addresses detected")
             print("Waiting for network connection...")
             if not self._network_ready.wait(timeout=self._network_timeout):
-                print("\nTimeout: No network connection established")
+                print("Timeout: No network connection established")
                 print("Note: The app will still try to use link-local addresses if available")
-                self._network_ready.set()  # Proceed anyway for link-local
+                self._network_ready.set()
 
-        # Get username
-        self.username = get_user_input("\nEnter your username: ")
+        # Create UI - username will be asked within the UI
+        self.chat_window = ChatWindow(
+            username=self.username,  # This can be None now, UI will ask
+            send_private_msg=self._send_private_message,
+            send_broadcast=self.udp_multicast.send,
+            get_peers=self.get_peers,
+            network_manager=self.network_mgr
+        )
         
-        # Initialize services
-        if not self._initialize_services():
-            print("\nFailed to initialize network services!")
-            self.shutdown()
-            return
-
-        self.running = True
-        print("\nZTalk successfully started!")
-        print("Type /help for available commands\n")
+        # Set up a callback when username is set
+        self.chat_window.on_username_set = self._on_username_set
         
-        # Start input thread
-        input_thread = threading.Thread(target=self._input_handler, daemon=True)
-        input_thread.start()
-
-        # Main loop
+        # Start the UI - will ask for username
         try:
-            while self.running:
-                time.sleep(1)
+            self.chat_window.mainloop()
         except KeyboardInterrupt:
+            pass
+        finally:
             self.shutdown()
             
-        input_thread.join()
-
+    def _on_username_set(self, username):
+        """Called when username is set in the UI"""
+        self.username = username
+        print(f"Username set: {username}")
+        
+        # Now initialize network services with the username
+        if self._initialize_services():
+            if self.chat_window:
+                self.chat_window.add_system_message(f"ZTalk started successfully! Your username: {username}")
+                self.chat_window.add_system_message(f"Running on {platform.system()} {platform.release()}")
+        else:
+            if self.chat_window:
+                self.chat_window.add_system_message("Failed to initialize network services!")
+                
     def shutdown(self):
-        if not self.running:
-            return
+        """Shut down all network services and close the application"""
+        if not hasattr(self, 'running'):
+            self.running = True  # Set this so the shutdown can proceed
             
-        self.running = False
-        print("\nShutting down services...")
+        print("Shutting down ZTalk application...")
         
-        # Stop network manager first
-        self.network_mgr.stop()
-        
-        # Stop services in reverse initialization order
-        self.udp_multicast.stop()
-        self.tcp_server.stop()
-        self.service_discovery.shutdown()
-        
-        # Wait a brief moment for threads to finish
+        # Stop network services
+        try:
+            if hasattr(self, 'udp_multicast'):
+                print("Stopping UDP multicast...")
+                self.udp_multicast.stop()
+        except Exception as e:
+            print(f"Error stopping UDP multicast: {e}")
+            
+        try:
+            if hasattr(self, 'tcp_server'):
+                print("Stopping TCP server...")
+                self.tcp_server.stop()
+        except Exception as e:
+            print(f"Error stopping TCP server: {e}")
+            
+        try:
+            if hasattr(self, 'service_discovery'):
+                print("Shutting down service discovery...")
+                self.service_discovery.shutdown()
+        except Exception as e:
+            print(f"Error shutting down service discovery: {e}")
+            
+        try:
+            if hasattr(self, 'network_mgr'):
+                print("Stopping network manager...")
+                self.network_mgr.stop()
+        except Exception as e:
+            print(f"Error stopping network manager: {e}")
+            
+        # Wait a moment for threads to finish
+        print("Waiting for threads to finish...")
         time.sleep(0.5)
-        print("All services stopped. Goodbye!\n")
+        
+        # If chat window exists, destroy it
+        if hasattr(self, 'chat_window') and self.chat_window:
+            try:
+                print("Destroying chat window...")
+                self.chat_window.destroy()
+            except Exception as e:
+                print(f"Error destroying chat window: {e}")
+                
+        print("Shutdown complete.")
+                
+        # Force termination if necessary
+        try:
+            if platform.system() != "Windows":
+                os.kill(os.getpid(), signal.SIGKILL)
+            else:
+                # On Windows we can use os._exit
+                os._exit(0)
+        except:
+            # Last resort
+            sys.exit(0)
 
 if __name__ == "__main__":
     app = ZTalkApp()
     app.run()
+def main():
+    """Entry point for the application"""
+    try:
+        args = parse_arguments()
+        app = ZTalkApp(args)
+        app.run()
+    except Exception as e:
+        print(f"Fatal error: {e}")
+        return 1
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
