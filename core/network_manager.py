@@ -82,9 +82,9 @@ class NetworkManager:
 
     def _assign_link_local_ip(self, interface: str) -> Optional[str]:
         """Assign Bonjour-style link-local address"""
-        ip = f"169.254.{random.randint(1,254)}.{random.randint(1,254)}"
+        ip = f"192.168.1.{random.randint(2,254)}"
         try:
-            os.system(f"sudo ip addr add {ip}/16 dev {interface} >/dev/null 2>&1")
+            os.system(f"sudo ip addr add {ip}/24 dev {interface} >/dev/null 2>&1")
             os.system(f"sudo ip link set {interface} up >/dev/null 2>&1")
             return ip
         except Exception:
