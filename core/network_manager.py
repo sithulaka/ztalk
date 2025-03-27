@@ -1,64 +1,109 @@
-import socket
-import threading
-import time
-import netifaces
-import random
+"""
+Network Manager Module for ZTalk
+
+This module handles network interface discovery and management.
+"""
+
+import sys
 import os
-import platform
-import subprocess
-import ipaddress
+import time
+import threading
+import socket
 import logging
-from typing import Callable, Optional, Dict, List, Set, Tuple
+import platform
+import ipaddress
+from typing import Dict, List, Tuple, Callable, Optional, Set, Any
+
+# Import the netifaces compatibility module instead of netifaces directly
+try:
+    # First try to import from our compatibility module
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from netifaces_compat import interfaces, ifaddresses, gateways, AF_INET, AF_INET6, AF_LINK, is_fallback
+    if is_fallback():
+        logging.info("Using fallback netifaces implementation")
+    else:
+        logging.info("Using real netifaces implementation")
+except ImportError:
+    # If that fails, try to import netifaces directly
+    try:
+        import netifaces
+        interfaces = netifaces.interfaces
+        ifaddresses = netifaces.ifaddresses
+        gateways = netifaces.gateways
+        AF_INET = netifaces.AF_INET
+        AF_INET6 = netifaces.AF_INET6
+        AF_LINK = netifaces.AF_LINK
+        logging.info("Using direct netifaces import")
+    except ImportError:
+        logging.error("Failed to import netifaces or netifaces_compat")
+        raise
 
 class NetworkManager:
+    """
+    Manages network interfaces and connections for local network communication.
+    Provides automatic interface detection and IP configuration tools.
+    """
+    
     def __init__(self):
-        self.logger = logging.getLogger('NetworkManager')
-        self._last_interfaces = {}  # Track previous state
-        self._active_interfaces: Dict[str, str] = {}
-        self._interface_listeners = []
-        self._running = False
+        # Network interface tracking
+        self.active_interfaces: Dict[str, str] = {}  # {interface_name: ip}
         self.network_segments: Dict[str, List[str]] = {}  # {network_prefix: [ips]}
+        
+        # Interface change event listeners
         self.listeners: List[Callable] = []
+        
+        # Network monitoring thread
         self.running = True
         self._monitor_thread = threading.Thread(target=self._interface_monitor, daemon=True)
         self.check_interval = 5  # seconds
+        
+        # Platform detection
         self.platform = platform.system()  # 'Windows', 'Darwin' (macOS), or 'Linux'
-        # Track ARP table for cross-subnet communication
-        self.arp_table: Dict[str, Dict[str, str]] = {}  # {network: {ip: mac}}
-        # Track available network bridges
+        
+        # Hardware address tracking
+        self.mac_addresses: Dict[str, str] = {}  # {interface: mac}
+        
+        # Virtual interfaces (bridges)
         self.bridges: Set[str] = set()
-        self.unified_network = {}  # Store all discovered devices
-        self.last_scan = 0
-        self.scan_interval = 30  # Seconds between network scans
-
+        
+        # IP conflict tracking
+        self.arp_table: Dict[str, Dict[str, str]] = {}  # {network: {ip: mac}}
+        
+        # Network diagnostics data
+        self.latency_data: Dict[str, float] = {}  # {ip: latency_ms}
+        
     def start(self):
         """Start monitoring network interfaces"""
         self._update_interfaces()
         self._monitor_thread.start()
+        return True
 
     def stop(self):
-        """Stop monitoring"""
+        """Stop monitoring network interfaces"""
         self.running = False
         if self._monitor_thread.is_alive():
             self._monitor_thread.join(timeout=1.0)
-
-    def validate_network(self) -> bool:
-        """Check if we have any active network interfaces"""
-        return len(self._active_interfaces) > 0
-
+        return True
+        
     def add_interface_change_listener(self, callback: Callable):
-        """Add callback for interface changes"""
+        """Add callback to be notified when interfaces change"""
         self.listeners.append(callback)
-
-    def get_all_active_ips(self) -> Set[str]:
-        return set(self._active_interfaces.values())
-
+        
+    def remove_interface_change_listener(self, callback: Callable):
+        """Remove interface change listener"""
+        if callback in self.listeners:
+            self.listeners.remove(callback)
+            
+    def get_all_active_ips(self) -> List[str]:
+        """Get IPs from all active physical interfaces"""
+        return list(self.active_interfaces.values())
+    
     def get_network_segments(self) -> Dict[str, List[str]]:
         """Get available network segments"""
-        return self.network_segments
-
+        return self.network_segments.copy()
+    
     def get_primary_ip(self) -> Optional[str]:
-        """Get preferred IP (Ethernet first)"""
+        """Get preferred IP (Ethernet first, then WiFi)"""
         # Platform-specific primary interface patterns
         if self.platform == "Windows":
             primary_patterns = ('Ethernet', 'Wi-Fi')
@@ -68,330 +113,484 @@ class NetworkManager:
             primary_patterns = ('en', 'eth', 'wl')
             
         for pattern in primary_patterns:
-            for interface, ip in self._active_interfaces.items():
+            for interface, ip in self.active_interfaces.items():
                 if interface.startswith(pattern):
                     return ip
                     
-        return next(iter(self._active_interfaces.values()), None) if self._active_interfaces else None
-
-    def create_virtual_bridge(self, interface1: str, interface2: str) -> bool:
-        """Create a virtual bridge between two interfaces to enable cross-network communication"""
-        bridge_name = f"br_{interface1}_{interface2}"
+        # If no preferred interface found, return the first one
+        return next(iter(self.active_interfaces.values()), None) if self.active_interfaces else None
+    
+    def get_interface_details(self, interface_name: str) -> Dict[str, Any]:
+        """Get detailed information about a network interface"""
+        details = {
+            "name": interface_name,
+            "ip": None,
+            "netmask": None,
+            "gateway": None,
+            "mac": None,
+            "is_up": False,
+            "mtu": None,
+            "type": self._get_interface_type(interface_name)
+        }
         
         try:
-            if self.platform == "Linux":
-                # Check if bridge-utils is installed
-                result = subprocess.run(['which', 'brctl'], capture_output=True, text=True)
-                if result.returncode != 0:
-                    print("bridge-utils not installed. Cannot create bridge.")
-                    return False
-                
-                # Create bridge
-                os.system(f"sudo brctl addbr {bridge_name}")
-                os.system(f"sudo brctl addif {bridge_name} {interface1}")
-                os.system(f"sudo brctl addif {bridge_name} {interface2}")
-                os.system(f"sudo ip link set {bridge_name} up")
-                
-                self.bridges.add(bridge_name)
-                return True
-            elif self.platform == "Darwin":  # macOS
-                # macOS uses different bridging commands
-                os.system(f"sudo ifconfig bridge create")
-                os.system(f"sudo ifconfig bridge0 addm {interface1} addm {interface2} up")
-                self.bridges.add("bridge0")
-                return True
-            elif self.platform == "Windows":
-                # Windows bridging requires more complex approach using netsh or PowerShell
-                # This is a simplified version
-                os.system(f'netsh interface bridge add interface "{interface1}" "{interface2}"')
-                return True
+            # Get IP and netmask
+            addrs = ifaddresses(interface_name)
+            if AF_INET in addrs:
+                for addr in addrs[AF_INET]:
+                    if 'addr' in addr and not addr['addr'].startswith('127.'):
+                        details["ip"] = addr.get('addr')
+                        details["netmask"] = addr.get('netmask')
+            
+            # Get MAC address
+            if AF_LINK in addrs:
+                for addr in addrs[AF_LINK]:
+                    if 'addr' in addr:
+                        details["mac"] = addr.get('addr')
+            
+            # Get gateway if this is the default route
+            gateways_info = gateways()
+            if 'default' in gateways_info and AF_INET in gateways_info['default']:
+                gw_addr, gw_iface = gateways_info['default'][AF_INET]
+                if gw_iface == interface_name:
+                    details["gateway"] = gw_addr
+            
+            # Get interface status on Linux/macOS
+            if self.platform != "Windows":
+                try:
+                    if self.platform == "Linux":
+                        output = subprocess.check_output(['ip', 'link', 'show', interface_name], 
+                                                        stderr=subprocess.DEVNULL, 
+                                                        universal_newlines=True)
+                        details["is_up"] = "state UP" in output
+                        
+                        # Get MTU
+                        for line in output.splitlines():
+                            if "mtu" in line:
+                                mtu_parts = line.split("mtu ")
+                                if len(mtu_parts) > 1:
+                                    details["mtu"] = int(mtu_parts[1].split()[0])
+                                    
+                    elif self.platform == "Darwin":  # macOS
+                        output = subprocess.check_output(['ifconfig', interface_name], 
+                                                        stderr=subprocess.DEVNULL, 
+                                                        universal_newlines=True)
+                        details["is_up"] = "status: active" in output
+                        
+                        # Get MTU
+                        for line in output.splitlines():
+                            if "mtu" in line:
+                                parts = line.split()
+                                for i, part in enumerate(parts):
+                                    if part == "mtu" and i < len(parts) - 1:
+                                        details["mtu"] = int(parts[i+1])
+                except Exception:
+                    pass
+            else:
+                # On Windows, assume the interface is up if it has an IP
+                details["is_up"] = details["ip"] is not None
                 
         except Exception as e:
-            print(f"Error creating bridge: {e}")
-            return False
-        
-        return False
-
-    def detect_arp_conflicts(self) -> List[Tuple[str, str]]:
-        """Detect potential ARP conflicts across network interfaces"""
-        conflicts = []
-        
-        # Get all MAC addresses across interfaces
-        interface_macs = {}
-        
-        try:
-            for interface in netifaces.interfaces():
-                if self._is_physical_interface(interface):
-                    addrs = netifaces.ifaddresses(interface)
-                    if netifaces.AF_LINK in addrs:
-                        mac = addrs[netifaces.AF_LINK][0].get('addr')
-                        if mac:
-                            if netifaces.AF_INET in addrs:
-                                for addr in addrs[netifaces.AF_INET]:
-                                    ip = addr.get('addr')
-                                    if ip and not ip.startswith('127.'):
-                                        if mac in interface_macs and interface_macs[mac] != ip:
-                                            conflicts.append((ip, interface_macs[mac]))
-                                        interface_macs[mac] = ip
-        except Exception as e:
-            print(f"Error detecting ARP conflicts: {e}")
+            print(f"Error getting interface details for {interface_name}: {e}")
             
-        return conflicts
-
-    def _update_interfaces(self) -> None:
-        new_interfaces = {}
-        
+        return details
+    
+    def set_interface_ip(self, interface: str, ip: str, netmask: str, gateway: Optional[str] = None) -> bool:
+        """Set IP configuration for an interface"""
         try:
-            interfaces = netifaces.interfaces()
-            
-            for iface in interfaces:
-                if iface.startswith('lo'):
-                    continue
+            if self.platform == "Windows":
+                # Windows netsh command
+                cmd = f'netsh interface ip set address name="{interface}" static {ip} {netmask}'
+                if gateway:
+                    cmd += f" {gateway}"
+                result = subprocess.run(cmd, shell=True, check=True, 
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                
+            elif self.platform == "Linux":
+                # Linux ip command
+                # First flush existing IPs
+                subprocess.run(['ip', 'addr', 'flush', 'dev', interface], 
+                              check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                
+                # Calculate CIDR from netmask
+                netmask_bits = sum(bin(int(x)).count('1') for x in netmask.split('.'))
+                
+                # Set new IP
+                subprocess.run(['ip', 'addr', 'add', f"{ip}/{netmask_bits}", 'dev', interface], 
+                              check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                
+                # Set interface up
+                subprocess.run(['ip', 'link', 'set', interface, 'up'], 
+                              check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                
+                # Set gateway if provided
+                if gateway:
+                    # Delete default route first
+                    try:
+                        subprocess.run(['ip', 'route', 'del', 'default'], 
+                                      check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    except Exception:
+                        pass  # Ignore if no default route exists
                     
-                addrs = netifaces.ifaddresses(iface)
+                    # Add new default route
+                    subprocess.run(['ip', 'route', 'add', 'default', 'via', gateway, 'dev', interface], 
+                                  check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 
-                if netifaces.AF_INET in addrs:
-                    for addr in addrs[netifaces.AF_INET]:
-                        ip = addr['addr']
-                        if not ip.startswith('127.') and not ip.startswith('169.254'):
-                            new_interfaces[iface] = ip
-                            # Only log if interface is new or IP changed
-                            if iface not in self._last_interfaces or self._last_interfaces[iface] != ip:
-                                self.logger.debug(f"Found active interface {iface} with IP {ip}")
-
-            # Log only actual changes
-            added = set(new_interfaces.keys()) - set(self._last_interfaces.keys())
-            removed = set(self._last_interfaces.keys()) - set(new_interfaces.keys())
-            
-            if added or removed:
-                if added:
-                    self.logger.info(f"New interfaces detected: {added}")
-                if removed:
-                    self.logger.info(f"Interfaces removed: {removed}")
-
-                # Notify listeners only if there are changes
-                self._active_interfaces = new_interfaces
-                for listener in self._interface_listeners:
-                    listener(self._active_interfaces)
-            
-            self._last_interfaces = new_interfaces.copy()
+            elif self.platform == "Darwin":  # macOS
+                # macOS ifconfig command
+                subprocess.run(['ifconfig', interface, 'inet', ip, 'netmask', netmask], 
+                              check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 
-        except Exception as e:
-            self.logger.error(f"Error updating network interfaces: {e}")
-
-    def _update_arp_table(self):
-        """Update ARP table for cross-subnet communication"""
-        if self.platform == "Linux":
-            self._update_arp_table_linux()
-        elif self.platform == "Darwin":
-            self._update_arp_table_macos()
-        elif self.platform == "Windows":
-            self._update_arp_table_windows()
-
-    def _update_arp_table_linux(self):
-        try:
-            result = subprocess.run(['arp', '-n'], capture_output=True, text=True)
-            self._parse_arp_output(result.stdout)
-        except Exception as e:
-            self.logger.error(f"Error updating Linux ARP table: {e}")
-
-    def _update_arp_table_macos(self):
-        try:
-            result = subprocess.run(['arp', '-a'], capture_output=True, text=True)
-            self._parse_arp_output(result.stdout)
-        except Exception as e:
-            self.logger.error(f"Error updating macOS ARP table: {e}")
-
-    def _update_arp_table_windows(self):
-        try:
-            result = subprocess.run(['arp', '-a'], capture_output=True, text=True)
-            self._parse_arp_output(result.stdout)
-        except Exception as e:
-            self.logger.error(f"Error updating Windows ARP table: {e}")
-
-    def _parse_arp_output(self, output: str):
-        # Common parsing logic
-        for line in output.strip().split('\n'):
-            try:
-                if self.platform == "Linux":
-                    self._parse_linux_arp_line(line)
-                elif self.platform == "Darwin":
-                    self._parse_macos_arp_line(line)
-                elif self.platform == "Windows":
-                    self._parse_windows_arp_line(line)
-            except Exception as e:
-                self.logger.debug(f"Error parsing ARP line: {e}")
-
-    def _is_physical_interface(self, interface: str) -> bool:
-        """Identify physical network interfaces based on platform"""
-        # Skip loopback and virtual interfaces across all platforms
-        excluded_patterns = ['lo', 'loop', 'docker', 'veth', 'virbr', 'vbox', 'vmnet']
-        
-        # Don't exclude bridges as we might have created them
-        if interface in self.bridges:
+                # Set gateway if provided
+                if gateway:
+                    # Delete default route first
+                    try:
+                        subprocess.run(['route', 'delete', 'default'], 
+                                      check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    except Exception:
+                        pass  # Ignore if no default route exists
+                    
+                    # Add new default route
+                    subprocess.run(['route', 'add', 'default', gateway], 
+                                  check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            
+            # Update our interface list after changing IP
+            self._update_interfaces()
             return True
             
-        if any(pattern in interface.lower() for pattern in excluded_patterns):
-            return False
-            
-        if self.platform == "Windows":
-            # Windows interface naming is different
-            return True  # Further filtering is done via IP address
-        elif self.platform == "Darwin":  # macOS
-            # On macOS, physical interfaces usually start with en (Ethernet/WiFi)
-            return interface.startswith(('en', 'bridge', 'awdl'))
-        else:  # Linux
-            # Linux physical interfaces usually start with en, eth, or wl
-            return interface.startswith(('en', 'eth', 'wl', 'br'))
-
-    def _get_interface_ip(self, interface: str) -> Optional[str]:
-        """Get IPv4 address for specific interface (cross-platform)"""
-        try:
-            # First check for any IPv4 address (works on all platforms)
-            addrs = netifaces.ifaddresses(interface).get(netifaces.AF_INET, [])
-            for addr in addrs:
-                if 'addr' in addr and not addr['addr'].startswith('127.'):
-                    return addr['addr']
-            
-            # Platform-specific fallback for interfaces without assigned IPs
-            if self.platform == "Linux":
-                return self._linux_handle_interface(interface)
-            elif self.platform == "Darwin":  # macOS
-                return self._macos_handle_interface(interface)
-            elif self.platform == "Windows":
-                return self._windows_handle_interface(interface)
-                    
-        except (ValueError, KeyError, IOError, Exception) as e:
-            print(f"Error getting IP for interface {interface}: {e}")
-        return None
-    
-    def _linux_handle_interface(self, interface: str) -> Optional[str]:
-        """Linux-specific interface handling"""
-        try:
-            # Check interface status using system calls
-            with open(f'/sys/class/net/{interface}/operstate') as f:
-                if 'up' in f.read().lower():
-                    # Try to use link-local addressing as a fallback
-                    return self._assign_link_local_ip(interface)
-        except Exception:
-            pass
-        return None
-        
-    def _macos_handle_interface(self, interface: str) -> Optional[str]:
-        """macOS-specific interface handling"""
-        try:
-            # Check if interface is up using ifconfig
-            result = subprocess.run(['ifconfig', interface], capture_output=True, text=True)
-            if 'status: active' in result.stdout.lower():
-                # On macOS, we can't easily assign IPs, so we'll use self-assigned link-local if needed
-                ip = f"169.254.{random.randint(1,254)}.{random.randint(1,254)}"
-                return ip
-        except Exception:
-            pass
-        return None
-        
-    def _windows_handle_interface(self, interface: str) -> Optional[str]:
-        """Windows-specific interface handling"""
-        # Windows typically auto-assigns link-local IPs when needed
-        # Just return None as Windows will handle this automatically
-        return None
-
-    def _assign_link_local_ip(self, interface: str) -> Optional[str]:
-        """Assign Bonjour-style link-local address (Linux only)"""
-        if self.platform != "Linux":
-            return None
-            
-        ip = f"169.254.{random.randint(1,254)}.{random.randint(1,254)}"
-        try:
-            # Try with sudo if available
-            if os.geteuid() == 0:  # Running as root
-                os.system(f"ip addr add {ip}/16 dev {interface} >/dev/null 2>&1")
-                os.system(f"ip link set {interface} up >/dev/null 2>&1")
-            else:
-                # Try with sudo
-                os.system(f"sudo ip addr add {ip}/16 dev {interface} >/dev/null 2>&1")
-                os.system(f"sudo ip link set {interface} up >/dev/null 2>&1")
-            return ip
         except Exception as e:
-            print(f"Error assigning link-local IP: {e}")
+            print(f"Error setting IP configuration: {e}")
+            return False
+    
+    def detect_ip_conflict(self, ip: str) -> Optional[str]:
+        """
+        Check if an IP address is already in use on the network.
+        Returns the MAC address of the conflicting host, or None if no conflict.
+        """
+        try:
+            # Find the network segment this IP belongs to
+            ip_obj = ipaddress.IPv4Address(ip)
+            for network_str, ips in self.network_segments.items():
+                network = ipaddress.IPv4Network(network_str)
+                if ip_obj in network:
+                    # Check if IP is in our ARP table
+                    if network_str in self.arp_table and ip in self.arp_table[network_str]:
+                        return self.arp_table[network_str][ip]
+                    
+                    # Try to ping to update ARP table
+                    self._ping_host(ip)
+                    self._update_arp_table()
+                    
+                    # Check again
+                    if network_str in self.arp_table and ip in self.arp_table[network_str]:
+                        return self.arp_table[network_str][ip]
+            
             return None
-
+        except Exception as e:
+            print(f"Error detecting IP conflict: {e}")
+            return None
+    
+    def ping_scan_network(self, network_prefix: Optional[str] = None) -> Dict[str, float]:
+        """
+        Scan a network segment by pinging all possible hosts.
+        Returns a dictionary of responding IPs and their latencies.
+        """
+        results = {}
+        
+        # Determine which network to scan
+        networks_to_scan = []
+        if network_prefix:
+            try:
+                networks_to_scan.append(ipaddress.IPv4Network(network_prefix))
+            except ValueError:
+                print(f"Invalid network prefix: {network_prefix}")
+                return results
+        else:
+            # Scan all network segments
+            for network_str in self.network_segments:
+                try:
+                    networks_to_scan.append(ipaddress.IPv4Network(network_str))
+                except ValueError:
+                    continue
+        
+        # Limit scan to smaller networks
+        active_hosts = []
+        for network in networks_to_scan:
+            # Only scan small networks (< 256 hosts) to avoid taking too long
+            if network.num_addresses <= 256:
+                for host in network.hosts():
+                    host_ip = str(host)
+                    # Skip our own IPs
+                    if host_ip in self.active_interfaces.values():
+                        continue
+                    active_hosts.append(host_ip)
+        
+        # Ping each host in a thread pool
+        max_threads = 15  # Limit concurrent pings
+        threads = []
+        results_lock = threading.Lock()
+        
+        def ping_worker(ip):
+            latency = self._ping_host(ip)
+            if latency is not None:
+                with results_lock:
+                    results[ip] = latency
+        
+        # Start ping threads
+        for ip in active_hosts:
+            if len(threads) >= max_threads:
+                # Wait for a thread to finish before starting a new one
+                for t in list(threads):
+                    if not t.is_alive():
+                        threads.remove(t)
+                if len(threads) >= max_threads:
+                    time.sleep(0.1)
+            
+            # Start a new thread
+            thread = threading.Thread(target=ping_worker, args=(ip,))
+            thread.daemon = True
+            thread.start()
+            threads.append(thread)
+        
+        # Wait for all threads to finish
+        for thread in threads:
+            thread.join(timeout=1.0)
+        
+        # Update latency data
+        self.latency_data.update(results)
+        
+        return results
+    
     def _interface_monitor(self):
-        """Monitor for network changes"""
+        """Thread function that monitors network interfaces"""
         while self.running:
             try:
                 self._update_interfaces()
+                time.sleep(self.check_interval)
             except Exception as e:
-                print(f"Error in network monitoring: {e}")
-            time.sleep(self.check_interval)
-            
-    def get_route_to_host(self, target_ip: str) -> Optional[str]:
-        """Determine best route to reach a specific host"""
-        # Check if target IP is in our network segments
-        for network, ips in self.network_segments.items():
-            try:
-                if ipaddress.IPv4Address(target_ip) in ipaddress.IPv4Network(network):
-                    # Target is in this network segment, use any IP from this segment
-                    if ips:
-                        return ips[0]
-            except:
-                pass
-                
-        # If we have a bridge, use its IP
-        for interface in self.active_interfaces:
-            if interface in self.bridges:
-                return self.active_interfaces[interface]
-                
-        # Last resort: use primary IP
-        return self.get_primary_ip()
-
-    def scan_network(self):
-        """Scan all interfaces for devices"""
-        current_time = time.time()
-        if current_time - self.last_scan < self.scan_interval:
-            return self.unified_network
-            
-        self.last_scan = current_time
-        self.unified_network.clear()
+                print(f"Error in interface monitor: {e}")
+                # Don't crash the thread on error
+                time.sleep(self.check_interval)
+    
+    def _update_interfaces(self):
+        """Update the list of active interfaces and their IPs"""
+        new_interfaces = {}
+        new_network_segments = {}
         
-        for interface, ip in self._active_interfaces.items():
-            try:
-                # Get network prefix
-                ip_parts = ip.split('.')
-                network_prefix = '.'.join(ip_parts[:-1])
-                
-                # Scan network range
-                for i in range(1, 255):
-                    target = f"{network_prefix}.{i}"
-                    if target == ip:
-                        continue
+        try:
+            for interface in interfaces():
+                if self._is_physical_interface(interface):
+                    ip = self._get_interface_ip(interface)
+                    if ip:
+                        new_interfaces[interface] = ip
                         
-                    # Fast ping scan
-                    if self.platform == "Windows":
-                        cmd = f"ping -n 1 -w 100 {target}"
-                    else:
-                        cmd = f"ping -c 1 -W 1 {target}"
+                        # Get MAC address if available
+                        addrs = ifaddresses(interface)
+                        if AF_LINK in addrs and addrs[AF_LINK]:
+                            mac = addrs[AF_LINK][0].get('addr')
+                            if mac:
+                                self.mac_addresses[interface] = mac
                         
-                    result = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                    
-                    if result.returncode == 0:
-                        # Device responded
+                        # Calculate network segments
                         try:
-                            hostname = socket.gethostbyaddr(target)[0]
-                        except:
-                            hostname = "unknown"
-                            
-                        self.unified_network[target] = {
-                            'hostname': hostname,
-                            'interface': interface,
-                            'type': 'WiFi' if interface.startswith(('wl', 'Wi-Fi')) else 'LAN'
-                        }
-                        
-            except Exception as e:
-                self.logger.error(f"Error scanning network on interface {interface}: {e}")
+                            if AF_INET in addrs:
+                                for addr in addrs[AF_INET]:
+                                    if 'addr' in addr and 'netmask' in addr and addr['addr'] == ip:
+                                        # Convert to network prefix
+                                        ip_obj = ipaddress.IPv4Address(ip)
+                                        netmask = ipaddress.IPv4Address(addr['netmask'])
+                                        network = ipaddress.IPv4Network(f"{ip}/{netmask}", strict=False)
+                                        network_prefix = str(network.network_address) + "/" + str(network.prefixlen)
+                                        
+                                        if network_prefix not in new_network_segments:
+                                            new_network_segments[network_prefix] = []
+                                        
+                                        new_network_segments[network_prefix].append(ip)
+                        except Exception as e:
+                            print(f"Error calculating network prefix: {e}")
+            
+            # Update the ARP table for cross-subnet communication
+            self._update_arp_table()
+            
+        except Exception as e:
+            print(f"Error updating interfaces: {e}")
+        
+        # Check if interfaces have changed
+        if new_interfaces != self.active_interfaces or new_network_segments != self.network_segments:
+            old_interfaces = self.active_interfaces.copy()
+            self.active_interfaces = new_interfaces
+            self.network_segments = new_network_segments
+            
+            # Notify listeners of the change
+            for callback in self.listeners:
+                try:
+                    callback(self.active_interfaces, old_interfaces)
+                except Exception as e:
+                    print(f"Error in interface change callback: {e}")
+    
+    def _is_physical_interface(self, interface: str) -> bool:
+        """Determine if this is a physical (not virtual/loopback) interface"""
+        # Skip loopback interfaces
+        if interface == 'lo' or interface.startswith('loop'):
+            return False
+            
+        # Skip Docker and other virtual interfaces
+        if interface.startswith(('docker', 'veth', 'vnet', 'tun', 'tap', 'virbr')):
+            return False
+            
+        # Platform specific checks
+        if self.platform == "Windows":
+            # Skip Hyper-V and other virtual adapters
+            if any(substr in interface.lower() for substr in ('hyper-v', 'virtual', 'miniport')):
+                return False
+        elif self.platform == "Darwin":  # macOS
+            # Skip VirtualBox and other virtual adapters
+            if interface.startswith(('vboxnet', 'utun')):
+                return False
+        else:  # Linux
+            # Check if this is a bridge we created
+            if interface in self.bridges:
+                return True
                 
-        return self.unified_network
-
-    def get_unified_network(self):
-        """Get all devices in the unified network view"""
-        return self.scan_network()
+            # Skip other virtual interfaces
+            if interface.startswith(('vmnet', 'vbox')):
+                return False
+        
+        return True
+    
+    def _get_interface_ip(self, interface: str) -> Optional[str]:
+        """Get the IP address for an interface"""
+        try:
+            addrs = ifaddresses(interface)
+            if AF_INET in addrs:
+                for addr in addrs[AF_INET]:
+                    if 'addr' in addr and not addr['addr'].startswith('127.'):
+                        return addr['addr']
+        except Exception as e:
+            print(f"Error getting IP for interface {interface}: {e}")
+        
+        return None
+        
+    def _get_interface_type(self, interface: str) -> str:
+        """Determine the type of network interface (Ethernet, WiFi, etc.)"""
+        if self.platform == "Windows":
+            if "wi-fi" in interface.lower() or "wireless" in interface.lower():
+                return "WiFi"
+            elif "ethernet" in interface.lower() or "local area connection" in interface.lower():
+                return "Ethernet"
+        elif self.platform == "Darwin":  # macOS
+            if interface.startswith("en"):
+                if interface == "en0":
+                    return "WiFi"  # Typically en0 is WiFi on macOS laptops
+                else:
+                    return "Ethernet"
+        else:  # Linux
+            if interface.startswith("wl"):
+                return "WiFi"
+            elif interface.startswith(("eth", "en")):
+                return "Ethernet"
+            elif interface.startswith("br"):
+                return "Bridge"
+        
+        return "Unknown"
+    
+    def _update_arp_table(self):
+        """Update ARP table for IP-to-MAC mappings"""
+        try:
+            if self.platform == "Linux":
+                # Read ARP table on Linux
+                with open('/proc/net/arp', 'r') as f:
+                    lines = f.readlines()[1:]  # Skip header
+                    for line in lines:
+                        parts = line.split()
+                        if len(parts) >= 6:
+                            ip, hw_type, flags, mac, mask, device = parts[:6]
+                            
+                            # Skip incomplete entries
+                            if mac == '00:00:00:00:00:00':
+                                continue
+                                
+                            # Find which network this IP belongs to
+                            try:
+                                ip_obj = ipaddress.IPv4Address(ip)
+                                for network_str in self.network_segments:
+                                    network = ipaddress.IPv4Network(network_str)
+                                    if ip_obj in network:
+                                        if network_str not in self.arp_table:
+                                            self.arp_table[network_str] = {}
+                                        self.arp_table[network_str][ip] = mac
+                                        break
+                            except Exception:
+                                continue
+            
+            elif self.platform == "Darwin":  # macOS
+                # Use arp command on macOS
+                try:
+                    output = subprocess.check_output(['arp', '-a'], universal_newlines=True)
+                    for line in output.splitlines():
+                        if '(' in line and ')' in line:
+                            parts = line.split()
+                            if len(parts) >= 4:
+                                ip = line.split('(')[1].split(')')[0]
+                                mac = parts[3]
+                                
+                                # Find which network this IP belongs to
+                                try:
+                                    ip_obj = ipaddress.IPv4Address(ip)
+                                    for network_str in self.network_segments:
+                                        network = ipaddress.IPv4Network(network_str)
+                                        if ip_obj in network:
+                                            if network_str not in self.arp_table:
+                                                self.arp_table[network_str] = {}
+                                            self.arp_table[network_str][ip] = mac
+                                            break
+                                except Exception:
+                                    continue
+                except Exception:
+                    pass
+            
+            elif self.platform == "Windows":
+                # Use arp command on Windows
+                try:
+                    output = subprocess.check_output(['arp', '-a'], universal_newlines=True)
+                    for line in output.splitlines():
+                        parts = line.split()
+                        if len(parts) >= 3 and parts[0][0].isdigit():
+                            ip = parts[0]
+                            mac = parts[1].replace('-', ':')
+                            
+                            # Find which network this IP belongs to
+                            try:
+                                ip_obj = ipaddress.IPv4Address(ip)
+                                for network_str in self.network_segments:
+                                    network = ipaddress.IPv4Network(network_str)
+                                    if ip_obj in network:
+                                        if network_str not in self.arp_table:
+                                            self.arp_table[network_str] = {}
+                                        self.arp_table[network_str][ip] = mac
+                                        break
+                            except Exception:
+                                continue
+                except Exception:
+                    pass
+        
+        except Exception as e:
+            print(f"Error updating ARP table: {e}")
+    
+    def _ping_host(self, ip: str) -> Optional[float]:
+        """Ping a host and return latency in ms (or None if unreachable)"""
+        try:
+            if self.platform == "Windows":
+                cmd = ['ping', '-n', '1', '-w', '1000', ip]
+            else:  # Linux and macOS
+                cmd = ['ping', '-c', '1', '-W', '1', ip]
+                
+            start_time = time.time()
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            end_time = time.time()
+            
+            if result.returncode == 0:
+                return (end_time - start_time) * 1000  # Convert to ms
+            return None
+        except Exception:
+            return None

@@ -1,24 +1,44 @@
 #!/bin/bash
-# Check if already in a virtual environment
-if [ -z "$VIRTUAL_ENV" ]; then
-    # Check if virtual environment exists
-    if [ ! -d ".venv" ]; then
-        echo "Creating virtual environment..."
-        python3 -m venv .venv
-    fi
-    echo "Activating virtual environment..."
-    source .venv/bin/activate
-else
-    echo "Virtual environment already active"
+
+# Check if compatibility modules exist
+if [ ! -f "netifaces_compat.py" ]; then
+    echo "Creating netifaces compatibility module..."
+    touch netifaces_compat.py
+    echo "#!/usr/bin/env python3
+import sys
+import logging
+logging.warning('netifaces_compat.py is empty. Please run the setup script first.')
+sys.exit(1)" > netifaces_compat.py
+    chmod +x netifaces_compat.py
 fi
 
-# Install dependencies
-echo "Installing dependencies..."
-pip install -r requirements.txt --break-system-packages || {
-    echo "Failed to install dependencies."
-    exit 1
-}
+if [ ! -f "zeroconf_compat.py" ]; then
+    echo "Creating zeroconf compatibility module..."
+    touch zeroconf_compat.py
+    echo "#!/usr/bin/env python3
+import sys
+import logging
+logging.warning('zeroconf_compat.py is empty. Please run the setup script first.')
+sys.exit(1)" > zeroconf_compat.py
+    chmod +x zeroconf_compat.py
+fi
 
-# Run the Python script
-echo "Running ztalk..."
-python ./main.py
+# Make sure compatibility modules are executable
+chmod +x netifaces_compat.py zeroconf_compat.py
+
+# Check if packages are installed locally
+if ! python3 -c "import zeroconf" &>/dev/null; then
+    echo "Zeroconf not found. Installing packages locally..."
+    ./pip_local_install.sh
+fi
+
+# Check if netifaces is available
+if ! python3 -c "import netifaces" &>/dev/null; then
+    echo "Netifaces not found. Will use fallback implementation."
+    # Test the compatibility module
+    python3 netifaces_compat.py
+fi
+
+# Run the application
+echo "Running ZTalk..."
+python3 ./main.py

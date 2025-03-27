@@ -417,19 +417,6 @@ class ChatWindow(ctk.CTk):
             self.msg_input.delete("1.0", "end")
             self.msg_input.configure(text_color=self.colors["text_light"])  # Normal text color
 
-    def on_user_selected(self, selected_user):
-        """Handle user selection from dropdown"""
-        if selected_user and selected_user != "Select User":
-            self.selected_user = selected_user
-            self.chat_mode_label.configure(text=f"💬 Private Chat with {selected_user}")
-            self.msg_type.set("private")
-            self.add_system_message(f"Private chat with {selected_user} started. Messages will only be sent to this user.")
-        else:
-            self.selected_user = None
-            self.chat_mode_label.configure(text="📢 Broadcast Chat")
-            self.msg_type.set("broadcast")
-            self.add_system_message("Switched to broadcast mode. Messages will be sent to all users.")
-            
     def restore_hint_text(self, event):
         """Restore the hint text when the input loses focus (if empty)"""
         if not self.msg_input.get("1.0", "end-1c").strip():
@@ -578,19 +565,7 @@ class ChatWindow(ctk.CTk):
             return
         
         self.add_message("System", message)
-        
-    def show_notification(self, title, message, notification_type="info", duration=3000):
-        """Show a notification popup with specified title, message, type and duration"""
-        from .notification import Notification
-        notification = Notification(
-            title=title,
-            message=message,
-            notification_type=notification_type,
-            duration=duration,
-            master=self
-        )
-        notification.show()
-        
+    
     def show_settings(self):
         """Show settings in the main window"""
         # Clear the chat area to show settings
@@ -1010,17 +985,18 @@ class ChatWindow(ctk.CTk):
         self.settings_btn_main.pack(pady=5, fill="x", padx=5)
         
     def open_ssh_client(self):
-        """Open the SSH client in the main display area"""
+        """Open a simplified SSH client in the main window"""
         # Clear the chat area to show SSH client
         for widget in self.chat_frame.winfo_children():
             widget.destroy()
             
-        # Configure the chat frame for terminal
+        # Configure the chat frame for SSH client
         self.chat_frame.grid_rowconfigure(0, weight=0)  # Header
-        self.chat_frame.grid_rowconfigure(1, weight=1)  # Terminal content
-        self.chat_frame.grid_columnconfigure(0, weight=1)
+        self.chat_frame.grid_rowconfigure(1, weight=0)  # Connection form
+        self.chat_frame.grid_rowconfigure(2, weight=1)  # Terminal or connections area
+        self.chat_frame.grid_rowconfigure(3, weight=0)  # Bottom buttons
         
-        # Header with back button
+        # Header
         header_frame = ctk.CTkFrame(self.chat_frame, fg_color=self.colors["sidebar_bg"], corner_radius=0)
         header_frame.grid(row=0, column=0, sticky="ew")
         
@@ -1037,37 +1013,97 @@ class ChatWindow(ctk.CTk):
                                corner_radius=8)
         back_btn.pack(side="left")
         
-        title_label = ctk.CTkLabel(title_container, text="SSH Client", 
+        title_label = ctk.CTkLabel(title_container, text="🖥️ Simple SSH Client", 
                                  font=ctk.CTkFont(size=20, weight="bold"),
                                  text_color=self.colors["text_light"])
         title_label.pack(side="left", padx=20)
         
-        # Content area
-        self.terminal_container = ctk.CTkFrame(self.chat_frame, fg_color="transparent")
-        self.terminal_container.grid(row=1, column=0, sticky="nsew", padx=0, pady=0)
+        # Connection form
+        connection_frame = ctk.CTkFrame(self.chat_frame, fg_color=self.colors["chat_bg"])
+        connection_frame.grid(row=1, column=0, sticky="ew", padx=20, pady=10)
         
-        # Create terminal widget
-        try:
-            # Import here to avoid circular imports
-            from .terminal_widget import TerminalWidget
-            
-            # Create the terminal widget (remove fg_color which isn't supported)
-            self.terminal = TerminalWidget(
-                name="SSH Terminal",
-                on_input=self.on_terminal_input,
-                on_exit=self.on_terminal_exit
-            )
-            
-            # Add some welcome text
-            self.terminal.add_output("SSH Terminal initialized.\n")
-            self.terminal.add_output("Use the connect button below to establish a connection.\n\n")
-            
-            # Show terminal
-            self.terminal.run()
-        except Exception as e:
-            self.show_notification("Error", f"Failed to initialize terminal: {e}", "error")
-            print(f"Terminal error: {e}")
-            self.setup_chat_area()  # Go back to chat
+        form_grid = ctk.CTkFrame(connection_frame, fg_color="transparent")
+        form_grid.pack(padx=20, pady=15, fill="x")
+        form_grid.grid_columnconfigure(1, weight=1)
+        
+        # Host/IP
+        host_label = ctk.CTkLabel(form_grid, text="Host/IP:", width=100, anchor="e")
+        host_label.grid(row=0, column=0, padx=(0, 10), pady=5, sticky="e")
+        
+        self.ssh_host = ctk.CTkEntry(form_grid, placeholder_text="hostname or IP address")
+        self.ssh_host.grid(row=0, column=1, sticky="ew", pady=5)
+        
+        # Port
+        port_label = ctk.CTkLabel(form_grid, text="Port:", width=100, anchor="e")
+        port_label.grid(row=1, column=0, padx=(0, 10), pady=5, sticky="e")
+        
+        self.ssh_port = ctk.CTkEntry(form_grid, placeholder_text="22", width=100)
+        self.ssh_port.grid(row=1, column=1, sticky="w", pady=5)
+        self.ssh_port.insert(0, "22")
+        
+        # Username
+        user_label = ctk.CTkLabel(form_grid, text="Username:", width=100, anchor="e")
+        user_label.grid(row=2, column=0, padx=(0, 10), pady=5, sticky="e")
+        
+        self.ssh_username = ctk.CTkEntry(form_grid, placeholder_text="login username")
+        self.ssh_username.grid(row=2, column=1, sticky="ew", pady=5)
+        
+        # Password
+        pass_label = ctk.CTkLabel(form_grid, text="Password:", width=100, anchor="e")
+        pass_label.grid(row=3, column=0, padx=(0, 10), pady=5, sticky="e")
+        
+        self.ssh_password = ctk.CTkEntry(form_grid, placeholder_text="password (optional)", show="*")
+        self.ssh_password.grid(row=3, column=1, sticky="ew", pady=5)
+        
+        # Network configuration option
+        config_frame = ctk.CTkFrame(connection_frame, fg_color=self.colors["input_bg"])
+        config_frame.pack(padx=20, pady=(0, 15), fill="x")
+        
+        self.use_network_detection = ctk.CTkSwitch(
+            config_frame, 
+            text="Use automatic network detection",
+            variable=tk.BooleanVar(value=True),
+            command=self.toggle_network_detection,
+            switch_width=40,
+            switch_height=20,
+            corner_radius=10
+        )
+        self.use_network_detection.pack(pady=10, padx=20, anchor="w")
+        
+        # Connect button
+        connect_btn = ctk.CTkButton(
+            connection_frame, 
+            text="Connect", 
+            command=self.simple_ssh_connect,
+            height=40,
+            fg_color=self.colors["accent"],
+            hover_color=self.colors["accent_hover"],
+            corner_radius=8
+        )
+        connect_btn.pack(pady=(0, 15), padx=20, fill="x")
+        
+        # Terminal area for connection
+        self.terminal_container = ctk.CTkFrame(self.chat_frame, fg_color="transparent")
+        self.terminal_container.grid(row=2, column=0, sticky="nsew", padx=20, pady=10)
+        
+        # Import and create a terminal widget
+        from .terminal_widget import TerminalWidget
+        self.terminal = TerminalWidget(self.terminal_container, fg_color=self.colors["chat_bg"])
+        self.terminal.pack(fill="both", expand=True)
+        
+        # Initial message
+        self.terminal.append_text("Simple SSH Client\n", "info")
+        self.terminal.append_text("Enter connection details above and click Connect\n\n", "info")
+        
+        # Return to chat button
+        close_btn = ctk.CTkButton(self.chat_frame, 
+                                text="Return to Chat", 
+                                command=self.setup_chat_area,
+                                fg_color=self.colors["input_bg"],
+                                hover_color=self.colors["accent"],
+                                corner_radius=8,
+                                height=40)
+        close_btn.grid(row=3, column=0, padx=20, pady=10, sticky="ew")
         
     def toggle_network_detection(self):
         """Toggle between automatic and manual network settings"""
@@ -1147,27 +1183,73 @@ class ChatWindow(ctk.CTk):
             self.manual_ip_frame.pack_forget()
             
     def simple_ssh_connect(self):
-        """Simple SSH connection handler (placeholder)"""
-        # Get connection details
-        host = getattr(self, 'ssh_host', None)
-        username = getattr(self, 'ssh_username', None)
+        """Connect to SSH with simplified options"""
+        host = self.ssh_host.get().strip()
+        username = self.ssh_username.get().strip()
         
-        # Check if we have the necessary attributes
-        if not hasattr(self, 'terminal'):
-            self.show_notification("Error", "Terminal not initialized", "error")
+        if not host or not username:
+            self.terminal.append_text("Error: Host and username are required\n", "error")
             return
             
-        if not host or not username or not hasattr(host, 'get') or not hasattr(username, 'get'):
-            self.show_notification("Error", "Host and username are required", "error")
-            if hasattr(self.terminal, 'add_output'):
-                self.terminal.add_output("Error: Host and username are required\n")
+        try:
+            port = int(self.ssh_port.get().strip())
+        except ValueError:
+            self.terminal.append_text("Error: Invalid port number\n", "error")
             return
+            
+        # Get source IP if manual settings are enabled
+        source_ip = None
+        if hasattr(self, "use_network_detection") and not self.use_network_detection.get():
+            if hasattr(self, "use_manual_ip") and self.use_manual_ip.get():
+                source_ip = self.manual_ip.get().strip()
+                if not source_ip:
+                    self.terminal.append_text("Error: Source IP is empty\n", "error")
+                    return
+            else:
+                # Get IP from selected interface
+                if hasattr(self, "iface_dropdown"):
+                    selected = self.iface_dropdown.get()
+                    if "(" in selected and ")" in selected:
+                        source_ip = selected.split("(")[1].split(")")[0].strip()
+                        
+        password = self.ssh_password.get()
         
-        # This would normally initiate an SSH connection
-        self.show_notification("Info", "SSH connection feature not implemented yet", "info")
-        if hasattr(self.terminal, 'add_output'):
-            self.terminal.add_output("SSH connection feature not implemented yet.\n")
-            self.terminal.add_output("This is a placeholder method.\n")
+        # Clear terminal before connecting
+        self.terminal.clear_display()
+        self.terminal.append_text(f"Connecting to {username}@{host}:{port}\n", "info")
+        if source_ip:
+            self.terminal.append_text(f"Using source IP: {source_ip}\n", "info")
+            
+        # Connect using SSH utils
+        from utils.ssh_utils import create_ssh_connection
+        
+        # First close any existing connection
+        if hasattr(self, '_ssh_connection') and self._ssh_connection:
+            from utils.ssh_utils import close_ssh_connection
+            try:
+                self.terminal.append_text("Closing previous SSH connection...\n", "info")
+                close_ssh_connection(self._ssh_connection)
+                self._ssh_connection = None
+            except Exception as e:
+                self.terminal.append_text(f"Error closing previous connection: {str(e)}\n", "error")
+        
+        # Start in a separate thread to keep UI responsive
+        def connect_thread():
+            try:
+                connection = create_ssh_connection(
+                    host=host, 
+                    port=port, 
+                    username=username, 
+                    password=password,
+                    terminal_widget=self.terminal,
+                    source_ip=source_ip
+                )
+                # Store the connection for cleanup when closing
+                self._ssh_connection = connection
+            except Exception as e:
+                self.terminal.append_text(f"Connection error: {str(e)}\n", "error")
+                
+        threading.Thread(target=connect_thread, daemon=True).start()
 
     def setup_network_status(self):
         """Setup network status indicators with modern styling"""
@@ -1866,64 +1948,3 @@ class ChatWindow(ctk.CTk):
         except (ImportError, ValueError, Exception):
             # Default to /24 if conversion fails
             return 24 
-
-    def initialize_ui(self):
-        """Initialize the main UI components"""
-        # Configure the grid
-        self.grid_rowconfigure(0, weight=1)  # Chat area
-        self.grid_rowconfigure(1, weight=0)  # Input area
-        self.grid_columnconfigure(0, weight=0)  # Sidebar
-        self.grid_columnconfigure(1, weight=1)  # Chat area
-        
-        # Setup sidebar
-        self.sidebar = ctk.CTkFrame(self, width=200, fg_color=self.colors["sidebar_bg"])
-        self.sidebar.grid(row=0, column=0, rowspan=2, sticky="nsew", padx=0, pady=0)
-        self.sidebar.grid_columnconfigure(0, weight=1)
-        self.sidebar.grid_rowconfigure(0, weight=0)  # Profile
-        self.sidebar.grid_rowconfigure(1, weight=0)  # Users header
-        self.sidebar.grid_rowconfigure(2, weight=1)  # Users list
-        self.sidebar.grid_rowconfigure(3, weight=0)  # Users controls
-        self.sidebar.grid_rowconfigure(4, weight=0)  # Utility buttons
-        self.sidebar.grid_propagate(False)  # Prevent sidebar from resizing
-
-        # Setup components
-        self.setup_user_profile()
-        self.setup_users_list()
-        self.setup_chat_area()
-        self.setup_input_area()
-        self.setup_utility_buttons()
-        self.setup_network_status()
-        
-        # Format the chat display
-        self.format_chat_display()
-        
-        # Add a welcome message
-        self.add_system_message("Welcome to ZTalk! You are in broadcast mode.")
-        self.add_system_message("Select a user from the dropdown to send private messages.")
-        
-        # Start auto-refreshing users list
-        self.auto_refresh_users()
-        
-    def ask_username(self):
-        """Show a dialog to ask for username"""
-        username_dialog = ctk.CTkInputDialog(
-            text="Enter your username:",
-            title="ZTalk Login"
-        )
-        new_username = username_dialog.get_input()
-        
-        if new_username and len(new_username) >= 2:
-            self.username = new_username
-            self.initialize_ui()
-        else:
-            self.destroy()  # Close the window if no valid username
-
-    def on_terminal_input(self, text):
-        """Handle input from the terminal widget"""
-        # In a real implementation, this would send the input to the SSH connection
-        print(f"Terminal input: {text}")
-        
-    def on_terminal_exit(self):
-        """Handle terminal exit event"""
-        # Go back to the chat view when the terminal is closed
-        self.after(100, self.setup_chat_area)

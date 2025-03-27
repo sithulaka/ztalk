@@ -1,5 +1,6 @@
 # Virtual environment
 .venv/
+.venv312/
 venv/
 env/
 
@@ -8,7 +9,6 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 dist/
-build/
 
 # IDE-specific files
 .vscode/
@@ -26,4 +26,4 @@ build/
 
 # Testing/coverage
 .coverage
-htmlcov/
+node_modules
