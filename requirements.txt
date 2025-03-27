@@ -1,3 +1,6 @@
-zeroconf>=0.38.0
 netifaces>=0.11.0
-typing-extensions>=4.0.0
+zeroconf>=0.39.0
+cryptography>=38.0.0
+pygments>=2.13.0  # For syntax highlighting in SSH terminal
+prompt_toolkit>=3.0.30  # For modern CLI interfaces
+paramiko>=2.11.0  # For SSH connections

@@ -12,11 +12,12 @@ else
     echo "Virtual environment already active"
 fi
 
-# Check and install only missing dependencies
-echo "Checking dependencies..."
-pip install -r requirements.txt
-
-echo "$USER ALL=(ALL) NOPASSWD: /usr/bin/ip" | sudo tee /etc/sudoers.d/ztalk
+# Install dependencies
+echo "Installing dependencies..."
+pip install -r requirements.txt --break-system-packages || {
+    echo "Failed to install dependencies."
+    exit 1
+}
 
 # Run the Python script
 echo "Running ztalk..."
