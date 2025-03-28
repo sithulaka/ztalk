@@ -12,6 +12,9 @@ import socket
 import logging
 import platform
 import ipaddress
+import subprocess
+import json
+import random
 from typing import Dict, List, Tuple, Callable, Optional, Set, Any
 
 # Import the netifaces compatibility module instead of netifaces directly
@@ -71,6 +74,18 @@ class NetworkManager:
         
         # Network diagnostics data
         self.latency_data: Dict[str, float] = {}  # {ip: latency_ms}
+        
+        # Fallback discovery
+        self.discovery_methods = [
+            self._primary_device_discovery,
+            self._arp_device_discovery,
+            self._icmp_device_discovery,
+            self._mdns_device_discovery,
+            self._netbios_device_discovery,
+            self._common_ports_scan_discovery
+        ]
+        self.discovery_fallback_index = 0
+        self.discovered_devices: Dict[str, Dict[str, Any]] = {}  # {ip: {details}}
         
     def start(self):
         """Start monitoring network interfaces"""
@@ -594,3 +609,414 @@ class NetworkManager:
             return None
         except Exception:
             return None
+    
+    def discover_local_devices(self, force_fallback: bool = False) -> Dict[str, Dict[str, Any]]:
+        """
+        Discover devices on the local network using all available methods
+        
+        Args:
+            force_fallback: If True, try all fallback methods instead of just primary discovery
+            
+        Returns:
+            Dictionary of discovered devices with IP as key and device details as value
+        """
+        # Reset discovered devices if force_fallback
+        if force_fallback:
+            self.discovered_devices = {}
+            
+        # Get current network segment
+        network_prefix = self._get_current_network_prefix()
+        if not network_prefix:
+            logging.warning("No active network interface found for device discovery")
+            return {}
+            
+        # Try primary discovery first unless forcing fallback
+        if not force_fallback:
+            devices = self._primary_device_discovery(network_prefix)
+            if devices:
+                self.discovered_devices.update(devices)
+                return self.discovered_devices
+                
+        # If primary failed or force_fallback, try fallback methods
+        logging.info("Primary device discovery failed or skipped, using fallback methods")
+        self._try_fallback_discovery_methods(network_prefix)
+            
+        return self.discovered_devices
+    
+    def _try_fallback_discovery_methods(self, network_prefix: str):
+        """Try fallback discovery methods one by one"""
+        # Skip the primary discovery method which is first in the list
+        for method in self.discovery_methods[1:]:
+            logging.info(f"Trying fallback discovery method: {method.__name__}")
+            try:
+                devices = method(network_prefix)
+                if devices:
+                    self.discovered_devices.update(devices)
+                    # If we found devices, we can stop
+                    if len(self.discovered_devices) > 0:
+                        logging.info(f"Discovered {len(devices)} devices with {method.__name__}")
+                        break
+            except Exception as e:
+                logging.warning(f"Fallback method {method.__name__} failed: {e}")
+                continue
+    
+    def _get_current_network_prefix(self) -> Optional[str]:
+        """Get the current network prefix (e.g., 192.168.1.)"""
+        ip = self.get_primary_ip()
+        if not ip:
+            return None
+            
+        # Extract network prefix
+        parts = ip.split('.')
+        if len(parts) == 4:
+            return f"{parts[0]}.{parts[1]}.{parts[2]}."
+        return None
+    
+    def _primary_device_discovery(self, network_prefix: str) -> Dict[str, Dict[str, Any]]:
+        """Primary device discovery method using a combination of ARP and ping scan"""
+        devices = {}
+        
+        # Start with ARP table lookup
+        self._update_arp_table()
+        for network, ips in self.arp_table.items():
+            if network.startswith(network_prefix):
+                for ip, mac in ips.items():
+                    devices[ip] = {
+                        "ip": ip,
+                        "mac": mac,
+                        "hostname": self._resolve_hostname(ip),
+                        "discovery_method": "arp",
+                        "last_seen": time.time()
+                    }
+        
+        # Supplement with ping scan
+        ping_results = self.ping_scan_network(network_prefix)
+        for ip, latency in ping_results.items():
+            if ip not in devices:
+                devices[ip] = {
+                    "ip": ip,
+                    "latency": latency,
+                    "hostname": self._resolve_hostname(ip),
+                    "discovery_method": "ping",
+                    "last_seen": time.time()
+                }
+            else:
+                devices[ip]["latency"] = latency
+                devices[ip]["last_seen"] = time.time()
+                
+        return devices
+    
+    def _arp_device_discovery(self, network_prefix: str) -> Dict[str, Dict[str, Any]]:
+        """Discover devices using ARP requests"""
+        devices = {}
+        
+        # Force ARP table update with broadcast ping
+        try:
+            if self.platform == "Windows":
+                subprocess.run(["ping", "-n", "1", "-w", "500", "-b", f"{network_prefix}255"], 
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                subprocess.run(["ping", "-c", "1", "-W", "1", "-b", f"{network_prefix}255"], 
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+            
+        # Run arp command and parse output
+        try:
+            if self.platform == "Windows":
+                output = subprocess.check_output(["arp", "-a"], universal_newlines=True)
+                for line in output.splitlines():
+                    if network_prefix in line:
+                        parts = [p for p in line.split() if p.strip()]
+                        if len(parts) >= 2:
+                            ip = parts[0]
+                            if ip.startswith(network_prefix):
+                                mac = parts[1].replace('-', ':')
+                                devices[ip] = {
+                                    "ip": ip,
+                                    "mac": mac,
+                                    "hostname": self._resolve_hostname(ip),
+                                    "discovery_method": "arp-command",
+                                    "last_seen": time.time()
+                                }
+            else:
+                output = subprocess.check_output(["arp", "-n"], universal_newlines=True)
+                for line in output.splitlines():
+                    if network_prefix in line and "(" not in line and "incomplete" not in line:
+                        parts = [p for p in line.split() if p.strip()]
+                        if len(parts) >= 3:
+                            ip = parts[0]
+                            mac = parts[2]
+                            devices[ip] = {
+                                "ip": ip,
+                                "mac": mac,
+                                "hostname": self._resolve_hostname(ip),
+                                "discovery_method": "arp-command",
+                                "last_seen": time.time()
+                            }
+        except Exception as e:
+            logging.warning(f"ARP command failed: {e}")
+            
+        return devices
+    
+    def _icmp_device_discovery(self, network_prefix: str) -> Dict[str, Dict[str, Any]]:
+        """Discover devices using ICMP ping sweep"""
+        devices = {}
+        
+        # Get subnet size from first interface in this network
+        subnet_size = 24  # Default to /24
+        for interface in self.active_interfaces:
+            details = self.get_interface_details(interface)
+            if details['ip'] and details['ip'].startswith(network_prefix):
+                if details['netmask']:
+                    # Convert netmask to CIDR
+                    try:
+                        subnet_size = sum(bin(int(x)).count('1') for x in details['netmask'].split('.'))
+                    except Exception:
+                        pass
+                break
+        
+        # Calculate range of IPs to scan based on subnet
+        ip_range = []
+        if subnet_size == 24:
+            # Standard /24 network, scan all 254 addresses
+            for i in range(1, 255):
+                ip_range.append(f"{network_prefix}{i}")
+        elif subnet_size < 24:
+            # Larger network, just scan a sample
+            for octet3 in range(0, 256):
+                for octet4 in random.sample(range(1, 255), 3):  # Just 3 random IPs per subnet
+                    ip_range.append(f"{network_prefix[:network_prefix.rindex('.')]}.{octet3}.{octet4}")
+        else:
+            # Smaller subnet, scan everything
+            base = network_prefix[:network_prefix.rindex('.')]
+            last_octet = int(network_prefix[network_prefix.rindex('.')+1:])
+            host_bits = 32 - subnet_size
+            hosts = 2 ** host_bits - 2  # Subtract network and broadcast addresses
+            for i in range(1, hosts + 1):
+                ip = f"{base}.{last_octet + i}"
+                ip_range.append(ip)
+        
+        # Use multiple threads for faster scanning
+        max_threads = 10
+        threads = []
+        results = {}
+        
+        def ping_worker(ip_list):
+            for ip in ip_list:
+                latency = self._ping_host(ip)
+                if latency is not None:
+                    results[ip] = latency
+        
+        # Split work among threads
+        chunk_size = max(1, len(ip_range) // max_threads)
+        for i in range(0, len(ip_range), chunk_size):
+            chunk = ip_range[i:i+chunk_size]
+            thread = threading.Thread(target=ping_worker, args=(chunk,))
+            thread.daemon = True
+            threads.append(thread)
+            thread.start()
+            
+        # Wait for all threads to complete (with timeout)
+        for thread in threads:
+            thread.join(timeout=5.0)
+            
+        # Process results
+        for ip, latency in results.items():
+            devices[ip] = {
+                "ip": ip,
+                "latency": latency,
+                "hostname": self._resolve_hostname(ip),
+                "discovery_method": "icmp",
+                "last_seen": time.time()
+            }
+            
+        return devices
+    
+    def _mdns_device_discovery(self, network_prefix: str) -> Dict[str, Dict[str, Any]]:
+        """Discover devices using mDNS (multicast DNS)"""
+        devices = {}
+        
+        # Check if we have zeroconf module available
+        try:
+            from zeroconf import Zeroconf, ServiceBrowser
+            
+            class MDNSListener:
+                def __init__(self):
+                    self.devices = {}
+                    
+                def add_service(self, zc, type_, name):
+                    info = zc.get_service_info(type_, name)
+                    if info:
+                        addresses = info.parsed_addresses()
+                        for addr in addresses:
+                            if addr.startswith(network_prefix):
+                                self.devices[addr] = {
+                                    "ip": addr,
+                                    "hostname": name,
+                                    "service": type_,
+                                    "port": info.port,
+                                    "discovery_method": "mdns",
+                                    "last_seen": time.time()
+                                }
+                
+                def remove_service(self, zc, type_, name):
+                    pass
+                    
+                def update_service(self, zc, type_, name):
+                    self.add_service(zc, type_, name)
+            
+            # Create zeroconf and browser instances
+            zeroconf = Zeroconf()
+            listener = MDNSListener()
+            
+            # Browse for common service types
+            browsers = []
+            service_types = [
+                "_http._tcp.local.",
+                "_https._tcp.local.",
+                "_ssh._tcp.local.",
+                "_workstation._tcp.local.",
+                "_device-info._tcp.local.",
+                "_googlecast._tcp.local.",
+                "_spotify-connect._tcp.local.",
+                "_printer._tcp.local.",
+                "_ipp._tcp.local.",
+                "_smb._tcp.local.",
+                "_afpovertcp._tcp.local."
+            ]
+            
+            for service_type in service_types:
+                browsers.append(ServiceBrowser(zeroconf, service_type, listener))
+            
+            # Give some time for discovery
+            time.sleep(3.0)
+            
+            # Cleanup
+            for browser in browsers:
+                browser.cancel()
+            zeroconf.close()
+            
+            # Return discovered devices
+            devices = listener.devices
+            
+        except ImportError:
+            logging.warning("zeroconf module not available for mDNS discovery")
+            
+        return devices
+    
+    def _netbios_device_discovery(self, network_prefix: str) -> Dict[str, Dict[str, Any]]:
+        """Discover devices using NetBIOS name service"""
+        devices = {}
+        
+        # NetBIOS is mainly on Windows systems
+        if self.platform != "Windows":
+            return devices
+            
+        try:
+            # Use nbtscan or net view command on Windows
+            if self.platform == "Windows":
+                output = subprocess.check_output(["net", "view"], universal_newlines=True)
+                for line in output.splitlines():
+                    if "\\" in line:
+                        hostname = line.split("\\")[1].strip()
+                        try:
+                            # Try to resolve the hostname to an IP
+                            ip = socket.gethostbyname(hostname)
+                            if ip.startswith(network_prefix):
+                                devices[ip] = {
+                                    "ip": ip,
+                                    "hostname": hostname,
+                                    "discovery_method": "netbios",
+                                    "last_seen": time.time()
+                                }
+                        except Exception:
+                            pass
+            else:
+                # Try nbtscan command on Linux/macOS if available
+                try:
+                    output = subprocess.check_output(["nbtscan", network_prefix + "0/24"], 
+                                                    universal_newlines=True)
+                    for line in output.splitlines():
+                        parts = line.split()
+                        if len(parts) >= 2 and parts[0].startswith(network_prefix):
+                            ip = parts[0]
+                            hostname = parts[1]
+                            devices[ip] = {
+                                "ip": ip,
+                                "hostname": hostname,
+                                "discovery_method": "netbios",
+                                "last_seen": time.time()
+                            }
+                except Exception:
+                    pass
+        except Exception as e:
+            logging.warning(f"NetBIOS discovery failed: {e}")
+            
+        return devices
+    
+    def _common_ports_scan_discovery(self, network_prefix: str) -> Dict[str, Dict[str, Any]]:
+        """Discover devices by scanning common ports on the network"""
+        devices = {}
+        
+        # Common ports to scan
+        common_ports = [80, 443, 22, 21, 25, 3389, 5900, 8080, 8443]
+        
+        # Define a small set of IPs to scan (we don't want to scan all 254 IPs for all ports)
+        ips_to_scan = []
+        
+        # Include DHCP range (usually .100 to .200)
+        for i in range(100, 201):
+            ips_to_scan.append(f"{network_prefix}{i}")
+            
+        # Include common device IPs
+        common_ips = [1, 2, 10, 20, 50, 51, 100, 101, 254, 253]
+        for i in common_ips:
+            ip = f"{network_prefix}{i}"
+            if ip not in ips_to_scan:
+                ips_to_scan.append(ip)
+                
+        # Maximum targets to prevent excessive scanning
+        max_targets = 25
+        if len(ips_to_scan) > max_targets:
+            ips_to_scan = random.sample(ips_to_scan, max_targets)
+            
+        # Scan for each port across all IPs
+        for port in common_ports:
+            for ip in ips_to_scan:
+                if ip in devices:
+                    continue  # Skip IPs we've already found
+                    
+                try:
+                    # Simple socket connect with short timeout
+                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    s.settimeout(0.5)
+                    result = s.connect_ex((ip, port))
+                    s.close()
+                    
+                    if result == 0:  # Port is open
+                        devices[ip] = {
+                            "ip": ip,
+                            "open_port": port,
+                            "hostname": self._resolve_hostname(ip),
+                            "discovery_method": "port-scan",
+                            "last_seen": time.time()
+                        }
+                except Exception:
+                    pass
+                    
+        return devices
+    
+    def _resolve_hostname(self, ip: str) -> Optional[str]:
+        """Resolve IP address to hostname"""
+        try:
+            hostname, _, _ = socket.gethostbyaddr(ip)
+            return hostname
+        except (socket.herror, socket.gaierror):
+            return None
+            
+    def get_unified_network(self) -> Dict[str, Dict[str, Any]]:
+        """Get a unified view of the network combining all discovery methods"""
+        # Force discovery with all methods
+        self.discover_local_devices(force_fallback=True)
+        return self.discovered_devices

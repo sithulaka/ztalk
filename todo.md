@@ -22,9 +22,9 @@
 
 ## Phase 1: Core Infrastructure
 - [x] Define modern UI color scheme and design guidelines
-- [ ] make a costom backgrond dhcp to assign the ip for all connected devices
-  - [ ] Implement automatic device detection on local networks
-  - [ ] Support both Wi-Fi and Ethernet interfaces
+- [x] make a costom backgrond dhcp to assign the ip for all connected devices
+  - [x] Implement automatic device detection on local networks
+  - [x] Support both Wi-Fi and Ethernet interfaces
   - [ ] Create fallback mechanisms when automatic discovery fails
 - [x] Implement real-time messaging framework
   - [x] Create broadcast messaging system for group chats
@@ -33,18 +33,15 @@
 
 ## Phase 2: SSH Functionality
 - [x] Create SSH client manager
-  - [x] Support multiple simultaneous SSH connections
-  - [x] Implement tabbed interface for each SSH session
-  - [x] Add SSH connection monitoring dashboard
+- [x] Create SSH connection example
+- [x] Support multiple simultaneous SSH connections
+- [x] Implement tabbed interface for each SSH session
+- [x] Add SSH connection monitoring dashboard
 - [x] Develop SSH profile system
-  - [x] Save SSH connection credentials securely
-  - [x] Implement quick-connect from saved profiles
-  - [x] Add auto-reconnect functionality with error handling
-- [ ] Add advanced SSH features
-  - [ ] File transfer capabilities
-  - [ ] Command history and macro support
-  - [ ] Terminal customization options
-
+- [x] Save SSH connection credentials securely
+- [x] Add SSH tools and utilities
+- [x] Add advanced SSH features
+- [x] Key-based authentication for SSH
 
 ## Phase 3: User Interface Development
 - [x] Remove current ui completely
@@ -55,6 +52,7 @@
   - [x] Display current network connections and status
   - [x] Allow manual IP configuration when needed
   - [x] Add network diagnostics tools
+  - [x] Add light/dark/darkblue(currenet one)
 
 ## Phase 4: User Experience & Quality of Life
 - [x] Create comprehensive notification system
@@ -70,33 +68,26 @@
   - [x] Application behavior preferences
   - [x] Keyboard shortcuts
 
-## Phase 5: Testing & Optimization
-- [ ] Perform cross-platform testing
-  - [x] Linux compatibility
-  - [ ] Windows compatibility
-  - [ ] macOS compatibility
-- [x] Network stress testing
-  - [x] Test with large number of concurrent connections
-  - [x] Validate under poor network conditions
-  - [x] Ensure recovery from network interruptions
-- [x] Optimize performance
-  - [x] Reduce memory footprint
-  - [x] Improve startup time
-  - [x] Enhance UI responsiveness
+## Phase 5: Cross-Platform Testing
+- [x] Test on Linux distributions
+  - [x] Ubuntu 20.04+
+  - [x] Debian 10+
+  - [x] Fedora 32+
+  - [x] Arch Linux
+  - [x] Kali Linux
+- [x] Test on Windows 10/11
+  - [x] Add Windows-specific compatibility
+  - [x] Fix Windows networking issues
+  - [x] Optimize UI for Windows
+  - [x] Add firewall configuration for Windows
 
-## Phase 6: Documentation & Deployment
-- [x] Create user documentation
-  - [x] Quick start guide
-  - [x] Feature documentation
-  - [x] Troubleshooting guide
-- [ ] Prepare deployment packages
-  - [x] Linux package
-  - [ ] Windows installer
-  - [ ] macOS application bundle
-- [ ] Final testing and release
-  - [x] Verify all features work correctly
-  - [x] Ensure clean installation on Linux platforms
-  - [ ] Complete testing on Windows and macOS
+## Phase 6: Deployment and Packaging
+- [x] Create automated build script
+- [x] Create package for Linux distributions
+- [x] Create Windows installer
+  - [x] Implement portable version
+  - [x] Create installer with NSIS
+  - [x] Add desktop and Start Menu shortcuts
 
 ## Phase 7: Examples and Demonstrations
 - [x] Create basic chat example

@@ -4,6 +4,7 @@ module.exports = {
     "./src/**/*.{js,jsx,ts,tsx}",
     "./public/index.html"
   ],
+  darkMode: 'class',
   theme: {
     extend: {
       colors: {
@@ -102,7 +103,10 @@ module.exports = {
     },
   },
   plugins: [
-    require('daisyui')
+    require('daisyui'),
+    function({ addVariant }) {
+      addVariant('darkblue', '.darkblue &');
+    }
   ],
   daisyui: {
     themes: [
@@ -124,6 +128,19 @@ module.exports = {
           "accent": "#f59e0b",
           "neutral": "#1f2937",
           "base-100": "#111827",
+          "info": "#3abff8",
+          "success": "#22c55e",
+          "warning": "#f59e0b",
+          "error": "#ef4444",
+        },
+        ztalkDarkBlue: {
+          "primary": "#0ea5e9",
+          "secondary": "#8b5cf6",
+          "accent": "#f59e0b",
+          "neutral": "#172554", // Dark blue neutral
+          "base-100": "#0f172a", // Dark blue background
+          "base-200": "#1e3a8a", // Slightly lighter blue for elements
+          "base-300": "#1e40af", // Even lighter blue for borders
           "info": "#3abff8",
           "success": "#22c55e",
           "warning": "#f59e0b",

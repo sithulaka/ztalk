@@ -7,6 +7,7 @@ import platform
 import sys
 import threading
 import gc  # For garbage collection, used to find app instances
+import ipaddress  # For DHCP network validation
 from PIL import Image, ImageTk
 from .ssh_client import SSHClient
 from .notification import Notification
@@ -59,7 +60,7 @@ except ImportError:
 
 class ChatWindow(ctk.CTk):
     def __init__(self, username: str = None, send_private_msg: Callable = None, send_broadcast: Callable = None, get_peers: Callable = None, 
-                network_manager=None):
+                network_manager=None, enable_dhcp: Callable = None, get_dhcp_status: Callable = None):
         super().__init__()
 
         # Store callbacks
@@ -69,6 +70,8 @@ class ChatWindow(ctk.CTk):
         self.username = username
         self.platform = platform.system()  # 'Windows', 'Darwin' (macOS), or 'Linux'
         self.network_manager = network_manager  # Store network manager for advanced features
+        self.enable_dhcp = enable_dhcp  # Store DHCP enable/disable function
+        self.get_dhcp_status = get_dhcp_status  # Store DHCP status retrieval function
         
         # SSH client window
         self.ssh_client = None
@@ -763,6 +766,61 @@ class ChatWindow(ctk.CTk):
                                       button_hover_color=self.colors["accent_hover"],
                                       dropdown_fg_color=self.colors["input_bg"])
         refresh_combo.pack(side="right")
+        
+        # DHCP Server Settings
+        dhcp_frame = ctk.CTkFrame(network_settings, fg_color="transparent")
+        dhcp_frame.pack(fill="x", padx=15, pady=5)
+        
+        dhcp_label = ctk.CTkLabel(dhcp_frame, text="DHCP Server:",
+                                width=120,
+                                anchor="w",
+                                font=ctk.CTkFont(size=13),
+                                text_color=self.colors["text_gray"])
+        dhcp_label.pack(side="left")
+        
+        # Check if we have a reference to the app for getting DHCP status
+        dhcp_enabled = False
+        try:
+            import gc
+            from main import ZTalkApp
+            app_instances = [obj for obj in gc.get_objects() if isinstance(obj, ZTalkApp)]
+            if app_instances:
+                app = app_instances[0]
+                dhcp_status = app.get_dhcp_status()
+                dhcp_enabled = dhcp_status.get("enabled", False)
+        except Exception:
+            pass
+            
+        self.dhcp_var = tk.BooleanVar(value=dhcp_enabled)
+        
+        dhcp_switch = ctk.CTkSwitch(dhcp_frame,
+                                  text="",
+                                  variable=self.dhcp_var,
+                                  command=self.toggle_dhcp_server,
+                                  width=50,
+                                  switch_width=50,
+                                  button_color=self.colors["accent"],
+                                  button_hover_color=self.colors["accent_hover"],
+                                  progress_color=self.colors["accent"])
+        dhcp_switch.pack(side="left", padx=(5, 0))
+        
+        dhcp_info_button = ctk.CTkButton(dhcp_frame,
+                                      text="Configure",
+                                      command=self.show_dhcp_settings,
+                                      width=100,
+                                      height=30,
+                                      fg_color=self.colors["button_bg"],
+                                      hover_color=self.colors["button_hover"],
+                                      font=ctk.CTkFont(size=13))
+        dhcp_info_button.pack(side="right")
+        
+        # Add a warning label below the DHCP switch
+        dhcp_warning = ctk.CTkLabel(network_settings, 
+                                  text="⚠️ DHCP server should only be enabled in specific scenarios like creating ad-hoc networks.",
+                                  font=ctk.CTkFont(size=12, slant="italic"),
+                                  text_color="#FFD700",
+                                  wraplength=400)
+        dhcp_warning.pack(padx=15, pady=(0, 5), anchor="w")
         
         # About section
         about_label = ctk.CTkLabel(settings_scroll, text="About",
@@ -1927,3 +1985,245 @@ class ChatWindow(ctk.CTk):
         """Handle terminal exit event"""
         # Go back to the chat view when the terminal is closed
         self.after(100, self.setup_chat_area)
+
+    def toggle_dhcp_server(self):
+        """Toggle the DHCP server on/off with a warning dialog"""
+        new_state = self.dhcp_var.get()
+        
+        # If enabling DHCP, show warning dialog first
+        if new_state:
+            warning = CTkMessagebox(
+                title="DHCP Server Warning",
+                message="Enabling the DHCP server can cause network conflicts if your network already has a DHCP server.\n\n"
+                        "Only enable this feature if:\n"
+                        "• You're creating an ad-hoc network\n"
+                        "• No other DHCP server exists on your network\n"
+                        "• You have administrator rights\n\n"
+                        "Are you sure you want to enable the DHCP server?",
+                icon="warning",
+                option_1="Cancel",
+                option_2="Enable Anyway"
+            )
+            
+            response = warning.get()
+            if response != "Enable Anyway":
+                # Reset the switch if user canceled
+                self.dhcp_var.set(False)
+                return
+        
+        # Apply the change by finding the main app instance
+        try:
+            import gc
+            from main import ZTalkApp
+            app_instances = [obj for obj in gc.get_objects() if isinstance(obj, ZTalkApp)]
+            if app_instances:
+                app = app_instances[0]
+                success = app.enable_dhcp(new_state)
+                
+                if success:
+                    status = "enabled" if new_state else "disabled"
+                    self.show_notification("DHCP Server", f"DHCP server {status} successfully", "info")
+                    self.add_system_message(f"DHCP server {status}")
+                else:
+                    self.show_notification("Error", "Failed to change DHCP server state", "error")
+                    # Reset the switch to match actual state
+                    dhcp_status = app.get_dhcp_status()
+                    self.dhcp_var.set(dhcp_status.get("enabled", False))
+            else:
+                self.show_notification("Error", "Could not access application instance", "error")
+                self.dhcp_var.set(False)
+        except Exception as e:
+            self.show_notification("Error", f"Failed to toggle DHCP server: {e}", "error")
+            self.dhcp_var.set(False)
+    
+    def show_dhcp_settings(self):
+        """Show DHCP server configuration dialog"""
+        # Get current DHCP configuration
+        dhcp_network = "192.168.100.0/24"
+        dhcp_server_ip = None
+        
+        try:
+            import gc
+            from main import ZTalkApp
+            app_instances = [obj for obj in gc.get_objects() if isinstance(obj, ZTalkApp)]
+            if app_instances:
+                app = app_instances[0]
+                dhcp_status = app.get_dhcp_status()
+                dhcp_network = dhcp_status.get("network", dhcp_network)
+                dhcp_server_ip = dhcp_status.get("server_ip", "")
+        except Exception:
+            pass
+        
+        # Create a dialog window
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("DHCP Server Configuration")
+        dialog.geometry("500x400")
+        dialog.resizable(False, False)
+        dialog.focus_set()
+        dialog.grab_set()
+        
+        # Make dialog modal
+        dialog.transient(self)
+        
+        # Center dialog on parent window
+        x = self.winfo_x() + (self.winfo_width() // 2) - (500 // 2)
+        y = self.winfo_y() + (self.winfo_height() // 2) - (400 // 2)
+        dialog.geometry(f"+{x}+{y}")
+        
+        # Dialog content
+        main_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+        
+        # Title and warning
+        title_label = ctk.CTkLabel(main_frame, 
+                                 text="DHCP Server Configuration",
+                                 font=ctk.CTkFont(size=18, weight="bold"),
+                                 text_color=self.colors["text_light"])
+        title_label.pack(pady=(0, 10))
+        
+        warning_text = ("⚠️ WARNING: Enabling a DHCP server on your network can cause conflicts with existing "
+                      "DHCP servers and potentially disrupt network connectivity for other devices. "
+                      "Only use this feature in controlled environments or when creating ad-hoc networks.")
+        
+        warning_label = ctk.CTkLabel(main_frame, 
+                                   text=warning_text,
+                                   font=ctk.CTkFont(size=12, slant="italic"),
+                                   text_color="#FFD700",
+                                   wraplength=460)
+        warning_label.pack(pady=(0, 15))
+        
+        # Network settings
+        settings_frame = ctk.CTkFrame(main_frame, fg_color=self.colors["chat_bg"])
+        settings_frame.pack(fill="x", pady=(0, 15), ipady=10)
+        
+        # Network range
+        network_frame = ctk.CTkFrame(settings_frame, fg_color="transparent")
+        network_frame.pack(fill="x", padx=15, pady=5)
+        
+        network_label = ctk.CTkLabel(network_frame, 
+                                   text="Network CIDR:",
+                                   width=120,
+                                   anchor="w",
+                                   font=ctk.CTkFont(size=13),
+                                   text_color=self.colors["text_gray"])
+        network_label.pack(side="left")
+        
+        network_var = tk.StringVar(value=dhcp_network)
+        network_entry = ctk.CTkEntry(network_frame,
+                                   textvariable=network_var,
+                                   width=200,
+                                   border_color=self.colors["accent"],
+                                   fg_color=self.colors["input_bg"])
+        network_entry.pack(side="right")
+        
+        # Example label
+        example_label = ctk.CTkLabel(settings_frame, 
+                                   text="Example: 192.168.100.0/24 (creates a network with 254 available IPs)",
+                                   font=ctk.CTkFont(size=12, slant="italic"),
+                                   text_color=self.colors["text_gray"])
+        example_label.pack(padx=15, anchor="w")
+        
+        # Server IP settings
+        server_frame = ctk.CTkFrame(settings_frame, fg_color="transparent")
+        server_frame.pack(fill="x", padx=15, pady=5)
+        
+        server_label = ctk.CTkLabel(server_frame, 
+                                  text="Server IP:",
+                                  width=120,
+                                  anchor="w",
+                                  font=ctk.CTkFont(size=13),
+                                  text_color=self.colors["text_gray"])
+        server_label.pack(side="left")
+        
+        server_var = tk.StringVar(value=dhcp_server_ip or "")
+        server_entry = ctk.CTkEntry(server_frame,
+                                  textvariable=server_var,
+                                  width=200,
+                                  border_color=self.colors["accent"],
+                                  fg_color=self.colors["input_bg"])
+        server_entry.pack(side="right")
+        
+        # Server IP explanation
+        server_info_label = ctk.CTkLabel(settings_frame, 
+                                      text="Leave blank to use first IP in the network (e.g., 192.168.100.1)",
+                                      font=ctk.CTkFont(size=12, slant="italic"),
+                                      text_color=self.colors["text_gray"])
+        server_info_label.pack(padx=15, anchor="w")
+        
+        # Explanation about current status
+        status_label = ctk.CTkLabel(main_frame, 
+                                  text="Current DHCP Status: " + 
+                                      ("Enabled" if self.dhcp_var.get() else "Disabled"),
+                                  font=ctk.CTkFont(size=13),
+                                  text_color=self.colors["text_light"])
+        status_label.pack(pady=10)
+        
+        def apply_settings():
+            """Apply DHCP settings"""
+            network = network_var.get().strip()
+            server_ip = server_var.get().strip() or None
+            
+            # Validate network CIDR format
+            try:
+                ipaddress.IPv4Network(network)
+            except ValueError:
+                self.show_notification("Error", "Invalid network CIDR format", "error")
+                return
+                
+            # Validate server IP if provided
+            if server_ip:
+                try:
+                    ipaddress.IPv4Address(server_ip)
+                except ValueError:
+                    self.show_notification("Error", "Invalid server IP address", "error")
+                    return
+            
+            # Apply settings
+            try:
+                import gc
+                from main import ZTalkApp
+                app_instances = [obj for obj in gc.get_objects() if isinstance(obj, ZTalkApp)]
+                if app_instances:
+                    app = app_instances[0]
+                    # Keep current enable/disable state, just update network settings
+                    current_state = app.dhcp_enabled
+                    success = app.enable_dhcp(current_state, network, server_ip)
+                    
+                    if success:
+                        self.show_notification("Success", "DHCP settings updated", "success")
+                        self.add_system_message(f"DHCP server settings updated: {network}")
+                    else:
+                        self.show_notification("Error", "Failed to update DHCP settings", "error")
+                else:
+                    self.show_notification("Error", "Could not access application instance", "error")
+            except Exception as e:
+                self.show_notification("Error", f"Failed to update DHCP settings: {e}", "error")
+                
+            # Close dialog
+            dialog.destroy()
+            
+        # Button frame
+        button_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        button_frame.pack(fill="x", pady=10)
+        
+        # Cancel button
+        cancel_button = ctk.CTkButton(button_frame,
+                                    text="Cancel",
+                                    command=dialog.destroy,
+                                    width=100,
+                                    height=35,
+                                    fg_color=self.colors["button_bg"],
+                                    hover_color=self.colors["button_hover"],
+                                    font=ctk.CTkFont(size=13))
+        cancel_button.pack(side="left", padx=10)
+        
+        # Apply button
+        apply_button = ctk.CTkButton(button_frame,
+                                   text="Apply Settings",
+                                   command=apply_settings,
+                                   width=150,
+                                   height=35,
+                                   fg_color=self.colors["accent"],
+                                   hover_color=self.colors["accent_hover"],
+                                   font=ctk.CTkFont(size=13, weight="bold"))
+        apply_button.pack(side="right", padx=10)

@@ -2,27 +2,41 @@
 
 ZTalk is a modern zero-configuration messaging and SSH management application for local networks.
 
-![ZTalk Dashboard](https://via.placeholder.com/800x450/3B82F6/FFFFFF?text=ZTalk+Dashboard)
-
 ## Features
 
-- **Zero-Configuration Networking:** Automatically discovers peers on the local network without any setup.
-- **Real-time Messaging:** Chat with peers on your network with support for private, group, and broadcast messages.
-- **Markdown Message Formatting:** Format your messages with Markdown including bold, italic, code blocks, and more.
-- **File Sharing:** Share files with peers directly through the chat interface.
-- **SSH Connection Management:** Manage multiple SSH connections with a user-friendly interface.
-- **SSH Profile System:** Save SSH connection credentials securely for quick access.
-- **Network Diagnostics Tools:** Scan your network, perform latency tests, and manage IP configurations.
-- **Modern User Interface:** Clean, responsive design with light and dark modes.
+- **Zero-Configuration Networking:** Automatically discovers peers on the local network without any setup
+- **Real-time Messaging:** Chat with peers on your network with support for private, group, and broadcast messages
+- **SSH Connection Management:** Manage multiple SSH connections with a user-friendly interface
+- **Network Diagnostics Tools:** Scan your network, perform latency tests, and manage IP configurations
+- **Dual Interfaces:** Modern React web UI and terminal-based UI options
 
 ## Installation
 
 ### Prerequisites
 
+- Python 3.8 or higher
 - Node.js (v14 or newer)
 - npm or yarn
 
-### Development Setup
+### Quick Installation
+
+The easiest way to install and run ZTalk is using the provided `run.sh` script:
+
+```bash
+git clone https://github.com/yourusername/ztalk.git
+cd ztalk
+./run.sh
+```
+
+This script will:
+1. Set up a Python virtual environment
+2. Install Python dependencies
+3. Install npm dependencies if needed
+4. Start the application
+
+### Manual Installation
+
+If you prefer to install manually:
 
 1. Clone the repository:
    ```bash
@@ -30,17 +44,74 @@ ZTalk is a modern zero-configuration messaging and SSH management application fo
    cd ztalk
    ```
 
-2. Install dependencies:
+2. Set up Python environment and dependencies:
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+   pip install -r requirements.txt
+   pip install flask flask-cors flask-socketio
+   ```
+
+3. Install Node.js dependencies:
    ```bash
    npm install
    ```
 
-3. Start the development server:
-   ```bash
-   npm run electron:start
-   ```
+## Running the Application
 
-### Building for Production
+ZTalk can be run in multiple modes:
+
+### Web Interface (Default)
+
+Run both the API server and React frontend:
+
+```bash
+./run.sh
+# or
+./run.sh web
+# or
+npm run dev
+```
+
+This will start:
+- Flask API server at `http://localhost:5000`
+- React frontend at `http://localhost:3000`
+
+### Terminal Interface
+
+```bash
+./run.sh terminal
+# or
+python main.py
+```
+
+### API Server Only
+
+```bash
+./run.sh api
+# or
+python app.py
+```
+
+### Examples
+
+Run any of the included examples:
+
+```bash
+./run.sh demo
+# or
+python ztalk.py demo
+```
+
+## Entry Points
+
+ZTalk has multiple entry points depending on your needs:
+
+1. **app.py** - The Flask API server connecting the React frontend with the ZTalk backend
+2. **main.py** - The terminal UI version of ZTalk
+3. **ztalk.py** - A launcher script for running different examples/components
+
+## Building for Production
 
 ```bash
 npm run electron:build
@@ -48,60 +119,63 @@ npm run electron:build
 
 This will create platform-specific installers in the `dist` directory.
 
-## Usage
+## Publishing to GitHub
 
-### Chat Functionality
+To publish ZTalk to GitHub:
 
-- **Broadcast Messages:** Send messages to all connected peers.
-- **Private Messages:** Select a peer from the sidebar to start a private conversation.
-- **Group Chats:** Create groups and add peers for collaborative discussions.
-- **Message Formatting:** Use Markdown to format your messages.
-- **File Sharing:** Attach files to your messages using the paper clip icon.
+1. Create a new GitHub repository:
+   ```bash
+   git init  # If not already a git repository
+   git add .
+   git commit -m "Initial commit of ZTalk"
+   ```
 
-### SSH Functionality
+2. Connect to your GitHub repository:
+   ```bash
+   git remote add origin https://github.com/yourusername/ztalk.git
+   ```
 
-- **Manage Connections:** Create, edit, and delete SSH connection profiles.
-- **Quick Connect:** Connect to saved profiles with a single click.
-- **Interactive Terminal:** Use the full-featured terminal for remote command execution.
-- **Connection Monitoring:** View connection status and details for all your SSH sessions.
+3. Push your code:
+   ```bash
+   git push -u origin main  # or master depending on your branch name
+   ```
 
-### Network Tools
+### Creating a Release
 
-- **Network Scanning:** Discover devices on your local network.
-- **Latency Testing:** Test connection speed to specific hosts.
-- **IP Configuration:** View and modify network interface settings.
-- **Interface Monitoring:** Monitor network traffic and status for each interface.
+1. Tag your release version:
+   ```bash
+   git tag -a v1.0.0 -m "ZTalk version 1.0.0"
+   git push origin v1.0.0
+   ```
+
+2. On GitHub, go to Releases and create a new release from your tag
+
+3. Include release notes and any pre-built binaries if you have them
 
 ## Architecture
 
 ZTalk is built with modern web technologies:
 
 - **Frontend:** React, TypeScript, TailwindCSS
-- **Backend:** Electron, Node.js
-- **Networking:** socket.io, bonjour-service
-- **SSH:** ssh2
-- **UI Components:** Heroicons, React Router
+- **Backend:** Flask API, Python core, Electron integration
+- **Networking:** socket.io, zeroconf/bonjour
+- **SSH:** paramiko (Python), ssh2 (Node.js)
 
-## Project Status
+## Troubleshooting
 
-### Implemented Features
-- ✅ Modern UI with responsive dashboard
-- ✅ Real-time messaging (broadcast, private, group)
-- ✅ Message formatting with Markdown
-- ✅ File sharing in messages
-- ✅ SSH connection management
-- ✅ SSH terminal interface
-- ✅ Network diagnostics tools
-- ✅ IP configuration interface
-- ✅ Light/dark mode support
-- ✅ Notification system
+### API Server Issues
 
-### Planned Features
-- ⏳ Advanced SSH features (file transfer, command history)
-- ⏳ CI/CD pipeline integration
-- ⏳ Task boards for agile workflows
-- ⏳ End-to-end encryption for messages
-- ⏳ Mobile companion app
+If you encounter issues with the Flask API server related to Werkzeug:
+
+```
+RuntimeError: The Werkzeug web server is not designed to run in production.
+```
+
+This is fixed in the latest version by adding `allow_unsafe_werkzeug=True`. If you're still seeing this error, run:
+
+```bash
+sed -i 's/socketio.run(app, host='\''0.0.0.0'\'', port=5000, debug=True, use_reloader=False)/socketio.run(app, host='\''0.0.0.0'\'', port=5000, debug=True, use_reloader=False, allow_unsafe_werkzeug=True)/g' app.py
+```
 
 ## Contributing
 
@@ -112,26 +186,6 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 3. Commit your changes (`git commit -m 'Add some amazing feature'`)
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
-
-## Frequently Asked Questions
-
-### What should I do if I can't connect to the network?
-First, ensure your network connections are working properly. Check that you're on the same local network as your peers. If problems persist, try restarting the application or using the Network Tools to diagnose connectivity issues.
-
-### How do I send a message to another user?
-Select the user from the Direct Messages list in the sidebar on the Chat page. This will open a private conversation where you can exchange messages only visible to you and the recipient.
-
-### Can I format my messages?
-Yes! ZTalk supports Markdown formatting. You can use **bold**, *italic*, `code`, and other Markdown syntax in your messages.
-
-### How do I create a group chat?
-In the Chat page, click the "+ New Group" button in the Groups section of the sidebar. Enter a name for your group and select the peers you want to include, then click "Create Group".
-
-### Is my SSH password stored securely?
-ZTalk only stores SSH connection details in memory during your session. For added security, we recommend using key-based authentication instead of passwords.
-
-### How can I contribute to the project?
-See the Contributing section above. We welcome code contributions, bug reports, and feature suggestions!
 
 ## License
 

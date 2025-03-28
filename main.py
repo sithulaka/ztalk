@@ -121,7 +121,9 @@ def main():
             send_private_msg=app.send_message,
             send_broadcast=app.broadcast_message,
             get_peers=app.get_active_peers,
-            network_manager=app.network_manager
+            network_manager=app.network_manager,
+            enable_dhcp=app.enable_dhcp,
+            get_dhcp_status=app.get_dhcp_status
         )
         chat_window.mainloop()
         

@@ -43,7 +43,12 @@
     "eject": "react-scripts eject",
     "electron:start": "concurrently -k \"cross-env BROWSER=none npm run start\" \"wait-on http://localhost:3000 && electron .\"",
     "electron:build": "npm run build && electron-builder",
-    "electron:package": "electron-builder"
+    "electron:package": "electron-builder",
+    "api": "node run-api.js",
+    "api:debug": "node run-api.js --debug",
+    "dev": "concurrently -k \"npm run api\" \"npm run start\"",
+    "dev:debug": "concurrently -k \"npm run api:debug\" \"npm run start\"",
+    "dev:electron": "concurrently -k \"npm run api\" \"npm run electron:start\""
   },
   "eslintConfig": {
     "extends": [

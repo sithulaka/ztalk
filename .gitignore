@@ -3,6 +3,7 @@
 .venv312/
 venv/
 env/
+ui/
 
 # Python cache and build files
 __pycache__/
@@ -24,6 +25,36 @@ dist/
 # macOS files
 .DS_Store
 
+# Compatibility files
+netifaces_compat.py
+zeroconf_compat.py
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build files
+/build/
+
 # Testing/coverage
 .coverage
-node_modules
+htmlcov/
+.pytest_cache/
+
+# Miscellaneous
+*.bak
+*.tmp
+.directory
+Thumbs.db
+
+# Old UI files
+ui/chat_window.py
+ui/chat_window.py.bak
+ui/config.py
+ui/notification.py
+ui/ssh_client.py 
+ui/terminal_widget.py
+ui/__init__.py
+ui/__pycache__/

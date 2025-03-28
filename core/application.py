@@ -19,6 +19,7 @@ from core.network_manager import NetworkManager
 from core.peer_discovery import PeerDiscovery, ZTalkPeer
 from core.messaging import MessageHandler, Message, MessageType
 from core.ssh_manager import SSHManager, SSHConnection, SSHConnectionStatus
+from core.dhcp_server import DHCPServer  # Import DHCPServer
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -44,6 +45,7 @@ class ZTalkApp:
         self.peer_discovery = None  # Will be initialized after network manager starts
         self.message_handler = None  # Will be initialized after peer discovery starts
         self.ssh_manager = None     # Will be initialized after network manager starts
+        self.dhcp_server = None     # Will be initialized if enabled in config
         
         # Status
         self.running = False
@@ -60,6 +62,11 @@ class ZTalkApp:
         
         # Groups
         self.groups: Dict[str, Dict[str, Any]] = self.config.get("groups", {})
+        
+        # DHCP settings - disabled by default
+        self.dhcp_enabled = self.config.get("dhcp_enabled", False)
+        self.dhcp_network = self.config.get("dhcp_network", "192.168.100.0/24")
+        self.dhcp_server_ip = self.config.get("dhcp_server_ip", None)
         
     def start(self) -> bool:
         """
@@ -79,6 +86,13 @@ class ZTalkApp:
             if not self.network_manager.start():
                 logger.error("Failed to start network manager")
                 return False
+                
+            # Start DHCP server if enabled
+            if self.dhcp_enabled:
+                logger.info("Starting DHCP server (enabled in config)")
+                self._start_dhcp_server()
+            else:
+                logger.info("DHCP server disabled (configure in settings to enable)")
                 
             # Initialize and start peer discovery
             logger.info("Starting peer discovery")
@@ -147,6 +161,10 @@ class ZTalkApp:
             # Stop SSH manager
             if self.ssh_manager:
                 self.ssh_manager.stop()
+                
+            # Stop DHCP server if running
+            if self.dhcp_server:
+                self.dhcp_server.stop()
                 
             # Stop peer discovery
             if self.peer_discovery:
@@ -531,26 +549,32 @@ class ZTalkApp:
     
     # Private methods
     def _load_config(self) -> Dict[str, Any]:
-        """Load configuration from file"""
-        # Create config directory if it doesn't exist
-        if not os.path.exists(self.CONFIG_DIRECTORY):
-            os.makedirs(self.CONFIG_DIRECTORY, exist_ok=True)
-            
-        # Load config if it exists
+        """Load configuration from file or create default"""
+        os.makedirs(self.CONFIG_DIRECTORY, exist_ok=True)
+        
         if os.path.exists(self.CONFIG_FILE):
             try:
                 with open(self.CONFIG_FILE, 'r') as f:
-                    return json.load(f)
+                    config = json.load(f)
+                    logger.info(f"Loaded configuration from {self.CONFIG_FILE}")
+                    return config
             except Exception as e:
                 logger.error(f"Error loading config: {e}")
                 
-        # Return default config
-        return {
+        # Default configuration
+        default_config = {
             "username": os.environ.get("USER", "user"),
             "discovery_port": self.DEFAULT_DISCOVERY_PORT,
             "messaging_port": self.DEFAULT_MESSAGING_PORT,
-            "groups": {}
+            "groups": {},
+            "dhcp_enabled": False,
+            "dhcp_network": "192.168.100.0/24",
+            "dhcp_server_ip": None,
+            "theme": "dark"
         }
+        
+        logger.info(f"Created default configuration")
+        return default_config
         
     def _save_config(self):
         """Save configuration to file"""
@@ -595,4 +619,99 @@ class ZTalkApp:
             try:
                 callback(new_interfaces, old_interfaces)
             except Exception as e:
-                logger.error(f"Error in network listener: {e}") 
+                logger.error(f"Error in network listener: {e}")
+    
+    # DHCP Management Methods
+    def _start_dhcp_server(self) -> bool:
+        """Initialize and start the DHCP server"""
+        try:
+            # Create DHCP server instance
+            self.dhcp_server = DHCPServer(self.network_manager)
+            
+            # Configure with settings from config
+            success = self.dhcp_server.configure(
+                network=self.dhcp_network,
+                server_ip=self.dhcp_server_ip,
+                # Optional additional settings can be added here
+            )
+            
+            if not success:
+                logger.error("Failed to configure DHCP server")
+                return False
+                
+            # Start the DHCP server
+            if not self.dhcp_server.start():
+                logger.error("Failed to start DHCP server")
+                return False
+                
+            logger.info(f"DHCP server started successfully on network {self.dhcp_network}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error starting DHCP server: {e}")
+            return False
+            
+    def enable_dhcp(self, enable: bool, network: Optional[str] = None, 
+                  server_ip: Optional[str] = None) -> bool:
+        """
+        Enable or disable the DHCP server functionality.
+        
+        Args:
+            enable: True to enable, False to disable
+            network: Network in CIDR notation (e.g., "192.168.100.0/24")
+            server_ip: IP address for the DHCP server
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        # Update configuration
+        self.dhcp_enabled = enable
+        self.config["dhcp_enabled"] = enable
+        
+        if network:
+            self.dhcp_network = network
+            self.config["dhcp_network"] = network
+            
+        if server_ip:
+            self.dhcp_server_ip = server_ip
+            self.config["dhcp_server_ip"] = server_ip
+            
+        # Save updated configuration
+        self._save_config()
+        
+        # If enabling and already running, start DHCP server
+        if enable and self.running:
+            # Stop existing server if running
+            if self.dhcp_server:
+                self.dhcp_server.stop()
+                
+            # Start with new configuration
+            return self._start_dhcp_server()
+            
+        # If disabling and server is running, stop it
+        elif not enable and self.dhcp_server:
+            self.dhcp_server.stop()
+            self.dhcp_server = None
+            logger.info("DHCP server disabled")
+            
+        return True
+        
+    def get_dhcp_status(self) -> Dict[str, Any]:
+        """
+        Get current DHCP server status and configuration.
+        
+        Returns:
+            Dictionary with DHCP status and configuration
+        """
+        status = {
+            "enabled": self.dhcp_enabled,
+            "running": bool(self.dhcp_server and self.running),
+            "network": self.dhcp_network,
+            "server_ip": self.dhcp_server_ip,
+        }
+        
+        # Add lease information if server is running
+        if self.dhcp_server:
+            status["leases"] = self.dhcp_server.get_leases()
+            
+        return status 
