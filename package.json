@@ -80,7 +80,20 @@
     "files": [
       "build/**/*",
       "node_modules/**/*",
-      "public/**/*"
+      "public/**/*",
+      "run-api.js"
+    ],
+    "extraResources": [
+      {
+        "from": ".",
+        "to": ".",
+        "filter": [
+          "app.py",
+          "requirements.txt",
+          "core/**/*",
+          "run.sh"
+        ]
+      }
     ],
     "directories": {
       "buildResources": "assets"
