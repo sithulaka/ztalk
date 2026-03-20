@@ -42,6 +42,7 @@ jobs:
             dist/*.deb
             dist/*.rpm
             dist/*.AppImage
+          if-no-files-found: error
 
   build-windows:
     runs-on: windows-latest
@@ -70,6 +71,7 @@ jobs:
         with:
           name: windows-builds
           path: dist/*.exe
+          if-no-files-found: error
 
   build-macos:
     runs-on: macos-latest
@@ -99,6 +101,7 @@ jobs:
         with:
           name: macos-builds
           path: dist/*.dmg
+          if-no-files-found: error
 
   release:
     needs: [build-linux, build-windows, build-macos]
@@ -111,14 +114,15 @@ jobs:
         with:
           path: dist-all
 
+      - name: List downloaded artifacts
+        run: find dist-all -type f | sort
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
           name: ZTalk ${{ github.ref_name }}
           draft: false
           prerelease: false
-          generate_release_notes: true
           files: |
             dist-all/linux-builds/*.deb
             dist-all/linux-builds/*.rpm
@@ -128,20 +132,27 @@ jobs:
           body: |
             ## ZTalk ${{ github.ref_name }}
 
-            A local network chat and tools application built with Electron + React + Python.
+            A zero-configuration peer-to-peer messaging, SSH management, and network tools application for local area networks. Built with Electron + React + Python (Flask).
+
+            ### Features
+            - P2P messaging with automatic peer discovery via mDNS
+            - SSH connection management
+            - Network tools and DHCP server
+            - Encrypted local communication
 
             ### Downloads
 
-            | Platform | File | Notes |
-            |----------|------|-------|
+            | Platform | File | Install |
+            |----------|------|---------|
             | 🐧 Linux (Debian/Ubuntu) | `.deb` | `sudo dpkg -i ztalk_*.deb` |
             | 🐧 Linux (Fedora/RHEL) | `.rpm` | `sudo rpm -i ztalk_*.rpm` |
             | 🐧 Linux (Universal) | `.AppImage` | `chmod +x ztalk_*.AppImage && ./ztalk_*.AppImage` |
-            | 🪟 Windows | `.exe` | Run installer |
+            | 🪟 Windows | `.exe` | Run the installer |
             | 🍎 macOS | `.dmg` | Open and drag to Applications |
 
             ### Requirements
-            - Python 3.8+
+            - Python 3.8+ must be installed on the host system
             - Local network access
+            - No internet connection required — ZTalk works entirely on your LAN
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
