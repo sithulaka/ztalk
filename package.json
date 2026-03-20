@@ -1,6 +1,11 @@
 {
   "name": "ztalk",
   "version": "0.1.0",
+  "description": "Zero-configuration peer-to-peer messaging and network tools for local area networks",
+  "author": {
+    "name": "sithulaka",
+    "email": "sithulaka@users.noreply.github.com"
+  },
   "private": true,
   "dependencies": {
     "@heroicons/react": "^2.0.18",
