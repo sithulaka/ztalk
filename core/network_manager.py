@@ -15,6 +15,7 @@ import ipaddress
 import subprocess
 import json
 import random
+import re
 from typing import Dict, List, Tuple, Callable, Optional, Set, Any
 
 # Import the netifaces compatibility module instead of netifaces directly
@@ -40,6 +41,8 @@ except ImportError:
     except ImportError:
         logging.error("Failed to import netifaces or netifaces_compat")
         raise
+
+logger = logging.getLogger(__name__)
 
 class NetworkManager:
     """
@@ -87,6 +90,12 @@ class NetworkManager:
         self.discovery_fallback_index = 0
         self.discovered_devices: Dict[str, Dict[str, Any]] = {}  # {ip: {details}}
         
+    @staticmethod
+    def _validate_interface_name(interface: str):
+        """Validate interface name to prevent injection attacks"""
+        if not re.match(r'^[a-zA-Z0-9_-]+$', interface):
+            raise ValueError(f"Invalid interface name: {interface!r}")
+
     def start(self):
         """Start monitoring network interfaces"""
         self._update_interfaces()
@@ -137,6 +146,7 @@ class NetworkManager:
     
     def get_interface_details(self, interface_name: str) -> Dict[str, Any]:
         """Get detailed information about a network interface"""
+        self._validate_interface_name(interface_name)
         details = {
             "name": interface_name,
             "ip": None,
@@ -199,28 +209,30 @@ class NetworkManager:
                                 for i, part in enumerate(parts):
                                     if part == "mtu" and i < len(parts) - 1:
                                         details["mtu"] = int(parts[i+1])
-                except Exception:
-                    pass
+                except (subprocess.SubprocessError, OSError) as e:
+                    logger.exception("Error getting interface status for %s", interface_name)
             else:
                 # On Windows, assume the interface is up if it has an IP
                 details["is_up"] = details["ip"] is not None
-                
-        except Exception as e:
-            print(f"Error getting interface details for {interface_name}: {e}")
+
+        except (OSError, KeyError, ValueError) as e:
+            logger.exception("Error getting interface details for %s", interface_name)
             
         return details
     
     def set_interface_ip(self, interface: str, ip: str, netmask: str, gateway: Optional[str] = None) -> bool:
         """Set IP configuration for an interface"""
+        self._validate_interface_name(interface)
         try:
             if self.platform == "Windows":
                 # Windows netsh command
-                cmd = f'netsh interface ip set address name="{interface}" static {ip} {netmask}'
+                cmd = ['netsh', 'interface', 'ip', 'set', 'address',
+                       f'name={interface}', 'static', ip, netmask]
                 if gateway:
-                    cmd += f" {gateway}"
-                result = subprocess.run(cmd, shell=True, check=True, 
+                    cmd.append(gateway)
+                result = subprocess.run(cmd, shell=False, check=True,
                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                
+
             elif self.platform == "Linux":
                 # Linux ip command
                 # First flush existing IPs
@@ -242,39 +254,39 @@ class NetworkManager:
                 if gateway:
                     # Delete default route first
                     try:
-                        subprocess.run(['ip', 'route', 'del', 'default'], 
+                        subprocess.run(['ip', 'route', 'del', 'default'],
                                       check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                    except Exception:
-                        pass  # Ignore if no default route exists
-                    
+                    except (subprocess.SubprocessError, OSError) as e:
+                        logger.exception("Error deleting default route on Linux")
+
                     # Add new default route
-                    subprocess.run(['ip', 'route', 'add', 'default', 'via', gateway, 'dev', interface], 
+                    subprocess.run(['ip', 'route', 'add', 'default', 'via', gateway, 'dev', interface],
                                   check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                
+
             elif self.platform == "Darwin":  # macOS
                 # macOS ifconfig command
-                subprocess.run(['ifconfig', interface, 'inet', ip, 'netmask', netmask], 
+                subprocess.run(['ifconfig', interface, 'inet', ip, 'netmask', netmask],
                               check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                
+
                 # Set gateway if provided
                 if gateway:
                     # Delete default route first
                     try:
-                        subprocess.run(['route', 'delete', 'default'], 
+                        subprocess.run(['route', 'delete', 'default'],
                                       check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                    except Exception:
-                        pass  # Ignore if no default route exists
-                    
+                    except (subprocess.SubprocessError, OSError) as e:
+                        logger.exception("Error deleting default route on macOS")
+
                     # Add new default route
-                    subprocess.run(['route', 'add', 'default', gateway], 
+                    subprocess.run(['route', 'add', 'default', gateway],
                                   check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            
+
             # Update our interface list after changing IP
             self._update_interfaces()
             return True
-            
-        except Exception as e:
-            print(f"Error setting IP configuration: {e}")
+
+        except (subprocess.SubprocessError, OSError, ValueError) as e:
+            logger.exception("Error setting IP configuration")
             return False
     
     def detect_ip_conflict(self, ip: str) -> Optional[str]:
@@ -301,8 +313,8 @@ class NetworkManager:
                         return self.arp_table[network_str][ip]
             
             return None
-        except Exception as e:
-            print(f"Error detecting IP conflict: {e}")
+        except (OSError, ValueError) as e:
+            logger.exception("Error detecting IP conflict for %s", ip)
             return None
     
     def ping_scan_network(self, network_prefix: Optional[str] = None) -> Dict[str, float]:
@@ -318,7 +330,7 @@ class NetworkManager:
             try:
                 networks_to_scan.append(ipaddress.IPv4Network(network_prefix))
             except ValueError:
-                print(f"Invalid network prefix: {network_prefix}")
+                logger.exception("Invalid network prefix: %s", network_prefix)
                 return results
         else:
             # Scan all network segments
@@ -382,8 +394,8 @@ class NetworkManager:
             try:
                 self._update_interfaces()
                 time.sleep(self.check_interval)
-            except Exception as e:
-                print(f"Error in interface monitor: {e}")
+            except (OSError, ValueError) as e:
+                logger.exception("Error in interface monitor")
                 # Don't crash the thread on error
                 time.sleep(self.check_interval)
     
@@ -421,14 +433,14 @@ class NetworkManager:
                                             new_network_segments[network_prefix] = []
                                         
                                         new_network_segments[network_prefix].append(ip)
-                        except Exception as e:
-                            print(f"Error calculating network prefix: {e}")
+                        except (OSError, ValueError) as e:
+                            logger.exception("Error calculating network prefix")
             
             # Update the ARP table for cross-subnet communication
             self._update_arp_table()
             
-        except Exception as e:
-            print(f"Error updating interfaces: {e}")
+        except (OSError, KeyError) as e:
+            logger.exception("Error updating interfaces")
         
         # Check if interfaces have changed
         if new_interfaces != self.active_interfaces or new_network_segments != self.network_segments:
@@ -440,8 +452,8 @@ class NetworkManager:
             for callback in self.listeners:
                 try:
                     callback(self.active_interfaces, old_interfaces)
-                except Exception as e:
-                    print(f"Error in interface change callback: {e}")
+                except (TypeError, ValueError, RuntimeError, OSError) as e:
+                    logger.exception("Error in interface change callback")
     
     def _is_physical_interface(self, interface: str) -> bool:
         """Determine if this is a physical (not virtual/loopback) interface"""
@@ -481,8 +493,8 @@ class NetworkManager:
                 for addr in addrs[AF_INET]:
                     if 'addr' in addr and not addr['addr'].startswith('127.'):
                         return addr['addr']
-        except Exception as e:
-            print(f"Error getting IP for interface {interface}: {e}")
+        except (OSError, KeyError, ValueError) as e:
+            logger.exception("Error getting IP for interface %s", interface)
         
         return None
         
@@ -520,11 +532,11 @@ class NetworkManager:
                         parts = line.split()
                         if len(parts) >= 6:
                             ip, hw_type, flags, mac, mask, device = parts[:6]
-                            
+
                             # Skip incomplete entries
                             if mac == '00:00:00:00:00:00':
                                 continue
-                                
+
                             # Find which network this IP belongs to
                             try:
                                 ip_obj = ipaddress.IPv4Address(ip)
@@ -535,9 +547,9 @@ class NetworkManager:
                                             self.arp_table[network_str] = {}
                                         self.arp_table[network_str][ip] = mac
                                         break
-                            except Exception:
+                            except ValueError:
                                 continue
-            
+
             elif self.platform == "Darwin":  # macOS
                 # Use arp command on macOS
                 try:
@@ -548,7 +560,7 @@ class NetworkManager:
                             if len(parts) >= 4:
                                 ip = line.split('(')[1].split(')')[0]
                                 mac = parts[3]
-                                
+
                                 # Find which network this IP belongs to
                                 try:
                                     ip_obj = ipaddress.IPv4Address(ip)
@@ -559,11 +571,11 @@ class NetworkManager:
                                                 self.arp_table[network_str] = {}
                                             self.arp_table[network_str][ip] = mac
                                             break
-                                except Exception:
+                                except ValueError:
                                     continue
-                except Exception:
-                    pass
-            
+                except (subprocess.SubprocessError, OSError) as e:
+                    logger.exception("Error running arp command on macOS")
+
             elif self.platform == "Windows":
                 # Use arp command on Windows
                 try:
@@ -573,7 +585,7 @@ class NetworkManager:
                         if len(parts) >= 3 and parts[0][0].isdigit():
                             ip = parts[0]
                             mac = parts[1].replace('-', ':')
-                            
+
                             # Find which network this IP belongs to
                             try:
                                 ip_obj = ipaddress.IPv4Address(ip)
@@ -584,13 +596,13 @@ class NetworkManager:
                                             self.arp_table[network_str] = {}
                                         self.arp_table[network_str][ip] = mac
                                         break
-                            except Exception:
+                            except ValueError:
                                 continue
-                except Exception:
-                    pass
-        
-        except Exception as e:
-            print(f"Error updating ARP table: {e}")
+                except (subprocess.SubprocessError, OSError) as e:
+                    logger.exception("Error running arp command on Windows")
+
+        except OSError as e:
+            logger.exception("Error updating ARP table")
     
     def _ping_host(self, ip: str) -> Optional[float]:
         """Ping a host and return latency in ms (or None if unreachable)"""
@@ -607,7 +619,8 @@ class NetworkManager:
             if result.returncode == 0:
                 return (end_time - start_time) * 1000  # Convert to ms
             return None
-        except Exception:
+        except (subprocess.SubprocessError, OSError) as e:
+            logger.exception("Error pinging host %s", ip)
             return None
     
     def discover_local_devices(self, force_fallback: bool = False) -> Dict[str, Dict[str, Any]]:
@@ -627,7 +640,7 @@ class NetworkManager:
         # Get current network segment
         network_prefix = self._get_current_network_prefix()
         if not network_prefix:
-            logging.warning("No active network interface found for device discovery")
+            logger.warning("No active network interface found for device discovery")
             return {}
             
         # Try primary discovery first unless forcing fallback
@@ -638,7 +651,7 @@ class NetworkManager:
                 return self.discovered_devices
                 
         # If primary failed or force_fallback, try fallback methods
-        logging.info("Primary device discovery failed or skipped, using fallback methods")
+        logger.info("Primary device discovery failed or skipped, using fallback methods")
         self._try_fallback_discovery_methods(network_prefix)
             
         return self.discovered_devices
@@ -647,17 +660,17 @@ class NetworkManager:
         """Try fallback discovery methods one by one"""
         # Skip the primary discovery method which is first in the list
         for method in self.discovery_methods[1:]:
-            logging.info(f"Trying fallback discovery method: {method.__name__}")
+            logger.info(f"Trying fallback discovery method: {method.__name__}")
             try:
                 devices = method(network_prefix)
                 if devices:
                     self.discovered_devices.update(devices)
                     # If we found devices, we can stop
                     if len(self.discovered_devices) > 0:
-                        logging.info(f"Discovered {len(devices)} devices with {method.__name__}")
+                        logger.info(f"Discovered {len(devices)} devices with {method.__name__}")
                         break
-            except Exception as e:
-                logging.warning(f"Fallback method {method.__name__} failed: {e}")
+            except (subprocess.SubprocessError, OSError, ValueError) as e:
+                logger.exception("Fallback method %s failed", method.__name__)
                 continue
     
     def _get_current_network_prefix(self) -> Optional[str]:
@@ -716,10 +729,10 @@ class NetworkManager:
                 subprocess.run(["ping", "-n", "1", "-w", "500", "-b", f"{network_prefix}255"], 
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             else:
-                subprocess.run(["ping", "-c", "1", "-W", "1", "-b", f"{network_prefix}255"], 
+                subprocess.run(["ping", "-c", "1", "-W", "1", "-b", f"{network_prefix}255"],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception:
-            pass
+        except (subprocess.SubprocessError, OSError) as e:
+            logger.exception("Error running broadcast ping")
             
         # Run arp command and parse output
         try:
@@ -754,8 +767,8 @@ class NetworkManager:
                                 "discovery_method": "arp-command",
                                 "last_seen": time.time()
                             }
-        except Exception as e:
-            logging.warning(f"ARP command failed: {e}")
+        except (subprocess.SubprocessError, OSError) as e:
+            logger.exception("ARP command failed")
             
         return devices
     
@@ -772,8 +785,8 @@ class NetworkManager:
                     # Convert netmask to CIDR
                     try:
                         subnet_size = sum(bin(int(x)).count('1') for x in details['netmask'].split('.'))
-                    except Exception:
-                        pass
+                    except (ValueError, AttributeError) as e:
+                        logger.exception("Error calculating subnet size")
                 break
         
         # Calculate range of IPs to scan based on subnet
@@ -901,7 +914,7 @@ class NetworkManager:
             devices = listener.devices
             
         except ImportError:
-            logging.warning("zeroconf module not available for mDNS discovery")
+            logger.warning("zeroconf module not available for mDNS discovery")
             
         return devices
     
@@ -930,12 +943,12 @@ class NetworkManager:
                                     "discovery_method": "netbios",
                                     "last_seen": time.time()
                                 }
-                        except Exception:
-                            pass
+                        except (socket.herror, socket.gaierror, OSError) as e:
+                            logger.exception("Error resolving hostname %s", hostname)
             else:
                 # Try nbtscan command on Linux/macOS if available
                 try:
-                    output = subprocess.check_output(["nbtscan", network_prefix + "0/24"], 
+                    output = subprocess.check_output(["nbtscan", network_prefix + "0/24"],
                                                     universal_newlines=True)
                     for line in output.splitlines():
                         parts = line.split()
@@ -948,10 +961,10 @@ class NetworkManager:
                                 "discovery_method": "netbios",
                                 "last_seen": time.time()
                             }
-                except Exception:
-                    pass
-        except Exception as e:
-            logging.warning(f"NetBIOS discovery failed: {e}")
+                except (subprocess.SubprocessError, OSError) as e:
+                    logger.exception("Error running nbtscan")
+        except (subprocess.SubprocessError, OSError) as e:
+            logger.exception("NetBIOS discovery failed")
             
         return devices
     
@@ -1002,11 +1015,11 @@ class NetworkManager:
                             "discovery_method": "port-scan",
                             "last_seen": time.time()
                         }
-                except Exception:
-                    pass
-                    
+                except OSError as e:
+                    logger.exception("Error scanning port %d on %s", port, ip)
+
         return devices
-    
+
     def _resolve_hostname(self, ip: str) -> Optional[str]:
         """Resolve IP address to hostname"""
         try:

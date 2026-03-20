@@ -1,9 +1,9 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Layout from '../components/Layout';
 import { useNetwork } from '../contexts/NetworkContext';
 import { toast } from 'react-toastify';
 import ReactMarkdown from 'react-markdown';
-import { PaperAirplaneIcon, PaperClipIcon, UserCircleIcon, UserIcon } from '@heroicons/react/24/outline';
+import { PaperAirplaneIcon, UserCircleIcon, UserIcon } from '@heroicons/react/24/outline';
 
 const Chat: React.FC = () => {
   const { 
@@ -24,8 +24,6 @@ const Chat: React.FC = () => {
   const [newGroupName, setNewGroupName] = useState('');
   const [selectedPeers, setSelectedPeers] = useState<string[]>([]);
   const [showNewGroupForm, setShowNewGroupForm] = useState(false);
-  const [attachedFile, setAttachedFile] = useState<File | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   
   // Auto-scroll to bottom when new messages arrive
@@ -47,28 +45,16 @@ const Chat: React.FC = () => {
   
   // Handle sending a message
   const handleSendMessage = () => {
-    if (!newMessage.trim() && !attachedFile) return;
-    
-    let content = newMessage;
-    
-    // Add file info to message if attached
-    if (attachedFile) {
-      content += `\n\n📎 [${attachedFile.name}] - ${(attachedFile.size / 1024).toFixed(2)} KB`;
-      
-      // In a real implementation, we would upload the file
-      // and add a download link to the message
-      toast.info(`File attached: ${attachedFile.name}`);
-      setAttachedFile(null);
-    }
-    
+    if (!newMessage.trim()) return;
+
     if (selectedPeer) {
-      sendMessage(content, selectedPeer.id);
+      sendMessage(newMessage, selectedPeer.id);
     } else if (selectedGroup) {
-      sendMessage(content, undefined, selectedGroup.id);
+      sendMessage(newMessage, undefined, selectedGroup.id);
     } else {
-      sendMessage(content);
+      sendMessage(newMessage);
     }
-    
+
     setNewMessage('');
   };
   
@@ -77,25 +63,6 @@ const Chat: React.FC = () => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSendMessage();
-    }
-  };
-  
-  // Handle file attachment
-  const handleFileAttachment = () => {
-    fileInputRef.current?.click();
-  };
-  
-  // Handle file change
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      if (file.size > 20 * 1024 * 1024) { // 20MB limit
-        toast.error('File too large. Maximum size is 20MB.');
-        return;
-      }
-      
-      setAttachedFile(file);
-      toast.success(`File ready: ${file.name}`);
     }
   };
   
@@ -297,7 +264,10 @@ const Chat: React.FC = () => {
                       <div className="text-xs font-medium mb-1">{msg.senderName}</div>
                     )}
                     <div className="prose dark:prose-invert prose-sm max-w-none">
-                      <ReactMarkdown>{msg.content}</ReactMarkdown>
+                      <ReactMarkdown
+                        allowedElements={['p','strong','em','code','pre','ul','ol','li','a','br','h1','h2','h3','blockquote']}
+                        components={{ a: ({node, ...props}) => <a {...props} target="_blank" rel="noopener noreferrer" /> }}
+                      >{msg.content}</ReactMarkdown>
                     </div>
                     <div className="text-xs text-gray-500 dark:text-gray-400 text-right mt-1">
                       {formatTime(msg.timestamp)}
@@ -312,15 +282,7 @@ const Chat: React.FC = () => {
           {/* Message input */}
           <div className="p-4 border-t border-gray-200 dark:border-gray-700">
             <div className="flex items-center">
-              <button
-                onClick={handleFileAttachment}
-                className="p-2 rounded-full text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 mr-2"
-                title="Attach file"
-              >
-                <PaperClipIcon className="h-5 w-5" />
-              </button>
-              
-              <div className="flex-1 relative">
+              <div className="flex-1">
                 <textarea
                   className="input py-2 min-h-[40px] max-h-32 resize-none"
                   value={newMessage}
@@ -330,36 +292,18 @@ const Chat: React.FC = () => {
                     selectedPeer ? selectedPeer.name : selectedGroup ? selectedGroup.name : 'everyone'
                   }...`}
                   rows={1}
+                  aria-label="Type a message"
                 />
-                {attachedFile && (
-                  <div className="mt-2 flex items-center text-sm text-gray-600 dark:text-gray-300">
-                    <PaperClipIcon className="h-4 w-4 mr-1" />
-                    <span className="truncate">{attachedFile.name}</span>
-                    <button
-                      onClick={() => setAttachedFile(null)}
-                      className="ml-2 text-gray-500 dark:text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                    >
-                      &times;
-                    </button>
-                  </div>
-                )}
               </div>
-              
+
               <button
                 onClick={handleSendMessage}
                 className="p-2 rounded-full bg-primary-500 text-white hover:bg-primary-600 ml-2"
-                title="Send message"
+                aria-label="Send message"
               >
                 <PaperAirplaneIcon className="h-5 w-5" />
               </button>
             </div>
-            
-            <input
-              type="file"
-              ref={fileInputRef}
-              onChange={handleFileChange}
-              className="hidden"
-            />
             
             <div className="mt-2 text-xs text-gray-500 dark:text-gray-400">
               Supports Markdown formatting. Press Enter to send, Shift+Enter for a new line.

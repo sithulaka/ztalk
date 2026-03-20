@@ -49,11 +49,27 @@ const NetworkContext = createContext<NetworkContextType | undefined>(undefined);
 export const NetworkProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [username, setUsername] = useState(() => {
     const savedUsername = localStorage.getItem('ztalk-username');
-    return savedUsername || `User_${Math.floor(Math.random() * 10000)}`;
+    return savedUsername || `User_${crypto.randomUUID().slice(0, 8)}`;
   });
   
   const [peers, setPeers] = useState<Peer[]>([]);
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<Message[]>(() => {
+    try {
+      const saved = localStorage.getItem('ztalk-messages');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          return parsed.map((msg: any) => ({
+            ...msg,
+            timestamp: new Date(msg.timestamp),
+          }));
+        }
+      }
+    } catch {
+      // Corrupt data, ignore
+    }
+    return [];
+  });
   const [groups, setGroups] = useState<Group[]>([]);
   const [selectedPeer, setSelectedPeer] = useState<Peer | null>(null);
   const [selectedGroup, setSelectedGroup] = useState<Group | null>(null);
@@ -63,8 +79,18 @@ export const NetworkProvider: React.FC<{ children: React.ReactNode }> = ({ child
   useEffect(() => {
     localStorage.setItem('ztalk-username', username);
   }, [username]);
-  
-  // Initialize with mock data
+
+  // Persist messages to localStorage when they change (cap at 1000)
+  useEffect(() => {
+    try {
+      const toSave = messages.slice(-1000);
+      localStorage.setItem('ztalk-messages', JSON.stringify(toSave));
+    } catch {
+      // Storage full or other error, ignore
+    }
+  }, [messages]);
+
+  // Initialize with mock data (only once on mount)
   useEffect(() => {
     // Simulate discovering peers
     const mockPeers: Peer[] = [
@@ -87,7 +113,7 @@ export const NetworkProvider: React.FC<{ children: React.ReactNode }> = ({ child
         lastSeen: new Date(Date.now() - 3600000) // 1 hour ago
       }
     ];
-    
+
     // Simulate existing groups
     const mockGroups: Group[] = [
       {
@@ -97,64 +123,66 @@ export const NetworkProvider: React.FC<{ children: React.ReactNode }> = ({ child
         createdAt: new Date(Date.now() - 86400000 * 2) // 2 days ago
       }
     ];
-    
-    // Simulate message history
-    const mockMessages: Message[] = [
-      {
-        id: uuidv4(),
-        content: 'Hello everyone! Welcome to the broadcast channel.',
-        sender: 'self',
-        senderName: username,
-        timestamp: new Date(Date.now() - 3600000 * 2), // 2 hours ago
-        isPrivate: false,
-        isRead: true
-      },
-      {
-        id: uuidv4(),
-        content: 'Hi there! Happy to be here.',
-        sender: '1',
-        senderName: 'Alice',
-        timestamp: new Date(Date.now() - 3600000 * 1.5), // 1.5 hours ago
-        isPrivate: false,
-        isRead: true
-      },
-      {
-        id: uuidv4(),
-        content: 'Hey Alice, can you help me with something?',
-        sender: 'self',
-        senderName: username,
-        recipient: '1',
-        timestamp: new Date(Date.now() - 3600000), // 1 hour ago
-        isPrivate: true,
-        isRead: true
-      },
-      {
-        id: uuidv4(),
-        content: 'Sure, what do you need?',
-        sender: '1',
-        senderName: 'Alice',
-        recipient: 'self',
-        timestamp: new Date(Date.now() - 3600000 + 300000), // 55 mins ago
-        isPrivate: true,
-        isRead: true
-      },
-      {
-        id: uuidv4(),
-        content: 'Team update: We\'re making good progress on the project.',
-        sender: '1',
-        senderName: 'Alice',
-        group: 'g1',
-        timestamp: new Date(Date.now() - 1800000), // 30 mins ago
-        isPrivate: false,
-        isRead: true
-      }
-    ];
-    
+
+    // Only load mock messages if no persisted messages were loaded
+    setMessages(prev => {
+      if (prev.length > 0) return prev;
+      return [
+        {
+          id: uuidv4(),
+          content: 'Hello everyone! Welcome to the broadcast channel.',
+          sender: 'self',
+          senderName: username,
+          timestamp: new Date(Date.now() - 3600000 * 2), // 2 hours ago
+          isPrivate: false,
+          isRead: true
+        },
+        {
+          id: uuidv4(),
+          content: 'Hi there! Happy to be here.',
+          sender: '1',
+          senderName: 'Alice',
+          timestamp: new Date(Date.now() - 3600000 * 1.5), // 1.5 hours ago
+          isPrivate: false,
+          isRead: true
+        },
+        {
+          id: uuidv4(),
+          content: 'Hey Alice, can you help me with something?',
+          sender: 'self',
+          senderName: username,
+          recipient: '1',
+          timestamp: new Date(Date.now() - 3600000), // 1 hour ago
+          isPrivate: true,
+          isRead: true
+        },
+        {
+          id: uuidv4(),
+          content: 'Sure, what do you need?',
+          sender: '1',
+          senderName: 'Alice',
+          recipient: 'self',
+          timestamp: new Date(Date.now() - 3600000 + 300000), // 55 mins ago
+          isPrivate: true,
+          isRead: true
+        },
+        {
+          id: uuidv4(),
+          content: 'Team update: We\'re making good progress on the project.',
+          sender: '1',
+          senderName: 'Alice',
+          group: 'g1',
+          timestamp: new Date(Date.now() - 1800000), // 30 mins ago
+          isPrivate: false,
+          isRead: true
+        }
+      ];
+    });
+
     setPeers(mockPeers);
     setGroups(mockGroups);
-    setMessages(mockMessages);
     setIsConnected(true);
-    
+
     // Simulate receiving a message after a delay
     setTimeout(() => {
       const newMessage: Message = {
@@ -166,11 +194,12 @@ export const NetworkProvider: React.FC<{ children: React.ReactNode }> = ({ child
         isPrivate: false,
         isRead: false
       };
-      
+
       setMessages(prev => [...prev, newMessage]);
       toast.info(`New message from ${newMessage.senderName}`);
     }, 10000);
-  }, [username]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   
   // Select a peer by ID
   const selectPeer = (peerId: string | null) => {

@@ -40,22 +40,31 @@ DEFAULT_LEASE_TIME = 86400  # 24 hours in seconds
 class DHCPServer:
     """DHCP Server for automatic IP assignment on local networks"""
     
-    def __init__(self, network_manager):
-        """Initialize the DHCP server with a reference to the network manager"""
+    def __init__(self, network_manager, network: str = '192.168.100.0/24',
+                 dns_servers: Optional[List[str]] = None):
+        """Initialize the DHCP server with a reference to the network manager.
+
+        Args:
+            network_manager: The network manager instance.
+            network: Default network in CIDR notation.
+            dns_servers: List of DNS server IPs. Defaults to Google DNS.
+        """
         self.logger = logging.getLogger('DHCPServer')
         self.network_manager = network_manager
         self.running = False
         self.socket = None
         self.thread = None
-        
+        self._cleanup_event = threading.Event()
+        self._cleanup_thread = None
+
         # Default network settings - can be overridden
-        self.network = ipaddress.IPv4Network('192.168.100.0/24')
+        self.network = ipaddress.IPv4Network(network)
         self.server_ip = str(self.network.network_address + 1)  # Typically .1
         self.subnet_mask = str(self.network.netmask)
         self.router = self.server_ip  # Default gateway is this server
-        self.dns_servers = ['8.8.8.8', '8.8.4.4']  # Google DNS by default
+        self.dns_servers = dns_servers if dns_servers is not None else ['8.8.8.8', '8.8.4.4']
         self.domain_name = 'ztalk.local'
-        
+
         # Track IP assignments and leases
         self.leases: Dict[str, Dict[str, Any]] = {}  # mac -> {ip, lease_end, hostname}
         self.reserved_ips: Set[str] = set()  # IPs that should not be assigned
@@ -115,9 +124,14 @@ class DHCPServer:
             
             # Start listening thread
             self.running = True
+            self._cleanup_event.clear()
             self.thread = threading.Thread(target=self._listen_for_requests, daemon=True)
             self.thread.start()
-            
+
+            # Start periodic lease cleanup thread
+            self._cleanup_thread = threading.Thread(target=self._periodic_lease_cleanup, daemon=True)
+            self._cleanup_thread.start()
+
             self.logger.info(f"DHCP server started on {self.server_ip}")
             return True
             
@@ -132,12 +146,16 @@ class DHCPServer:
     def stop(self):
         """Stop the DHCP server"""
         self.running = False
+        self._cleanup_event.set()
         if self.socket:
             self.socket.close()
             self.socket = None
         if self.thread:
             self.thread.join(timeout=2.0)
             self.thread = None
+        if self._cleanup_thread:
+            self._cleanup_thread.join(timeout=2.0)
+            self._cleanup_thread = None
         self.logger.info("DHCP server stopped")
     
     def _listen_for_requests(self):
@@ -526,6 +544,19 @@ class DHCPServer:
         """Format MAC address bytes as a string"""
         return ':'.join(f'{b:02x}' for b in mac_bytes)
     
+    def _periodic_lease_cleanup(self):
+        """Periodically clean up expired leases every 300 seconds."""
+        while not self._cleanup_event.wait(timeout=300):
+            current_time = int(time.time())
+            expired = [mac for mac, lease in self.leases.items()
+                       if lease['lease_end'] < current_time]
+            for mac in expired:
+                ip = self.leases[mac]['ip']
+                self.reserved_ips.discard(ip)
+                del self.leases[mac]
+            if expired:
+                self.logger.info(f"Cleaned up {len(expired)} expired lease(s)")
+
     def get_leases(self) -> Dict[str, Dict[str, Any]]:
         """Get current DHCP leases"""
         # Remove expired leases first

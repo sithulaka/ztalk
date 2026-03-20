@@ -114,17 +114,19 @@ const SSH: React.FC = () => {
     
     toast.success(`Connection "${connection.name}" created`);
   };
-  
+
   // Handle connecting to an SSH server
   const handleConnect = (id: string) => {
     // In a real implementation, this would use Electron's IPC to connect to the SSH server
-    setConnections(prev => 
-      prev.map(conn => 
-        conn.id === id 
-          ? { ...conn, status: 'connecting' } 
+    setConnections(prev =>
+      prev.map(conn =>
+        conn.id === id
+          ? { ...conn, status: 'connecting' }
           : conn
       )
     );
+    setNewConnection(prev => ({...prev, password: ''}));
+    setPassword('');
     
     // Simulate connection
     setTimeout(() => {
@@ -144,11 +146,14 @@ const SSH: React.FC = () => {
         })
       );
       
-      const conn = connections.find(c => c.id === id);
-      if (conn) {
-        setActiveTerminals(prev => ({ ...prev, [id]: true }));
-        toast.success(`Connected to ${conn.name}`);
-      }
+      setConnections(prev => {
+        const conn = prev.find(c => c.id === id);
+        if (conn) {
+          setActiveTerminals(terminals => ({ ...terminals, [id]: true }));
+          toast.success(`Connected to ${conn.name}`);
+        }
+        return prev;
+      });
     }, 1500);
   };
   
@@ -168,21 +173,28 @@ const SSH: React.FC = () => {
       return newTerminals;
     });
     
-    const conn = connections.find(c => c.id === id);
-    if (conn) {
-      toast.info(`Disconnected from ${conn.name}`);
-    }
+    setConnections(prev => {
+      const conn = prev.find(c => c.id === id);
+      if (conn) {
+        toast.info(`Disconnected from ${conn.name}`);
+      }
+      return prev;
+    });
   };
   
   // Handle deleting a connection
   const handleDeleteConnection = (id: string) => {
     const conn = connections.find(c => c.id === id);
-    
+
     if (conn?.status === 'connected') {
       toast.error('Disconnect before deleting');
       return;
     }
-    
+
+    if (!window.confirm(`Are you sure you want to delete the connection "${conn?.name}"?`)) {
+      return;
+    }
+
     setConnections(prev => prev.filter(conn => conn.id !== id));
     
     if (selectedConnection === id) {
@@ -413,6 +425,7 @@ const SSH: React.FC = () => {
                               onClick={() => handleDisconnect(conn.id)}
                               className="btn-danger"
                               title="Disconnect"
+                              aria-label="Disconnect"
                             >
                               <StopIcon className="h-5 w-5 mr-2" />
                               Disconnect
@@ -423,6 +436,7 @@ const SSH: React.FC = () => {
                               className="btn-success"
                               disabled={conn.status === 'connecting'}
                               title="Connect"
+                              aria-label="Connect"
                             >
                               {conn.status === 'connecting' ? (
                                 <>
@@ -441,6 +455,7 @@ const SSH: React.FC = () => {
                             onClick={() => handleDeleteConnection(conn.id)}
                             className="btn-outline-danger"
                             title="Delete connection"
+                            aria-label="Delete connection"
                           >
                             <TrashIcon className="h-5 w-5" />
                           </button>

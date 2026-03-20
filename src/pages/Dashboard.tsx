@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import Layout from '../components/Layout';
 import { useNetwork } from '../contexts/NetworkContext';
@@ -16,9 +16,7 @@ const Dashboard: React.FC = () => {
   const { peers, messages, groups, isConnected } = useNetwork();
   
   // Get recent messages (last 5)
-  const recentMessages = [...messages]
-    .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
-    .slice(0, 5);
+  const recentMessages = useMemo(() => [...messages].sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime()).slice(0, 5), [messages]);
   
   // Get online peers count
   const onlinePeersCount = peers.filter(peer => peer.isOnline).length;
@@ -96,7 +94,7 @@ const Dashboard: React.FC = () => {
       <div className="mb-6">
         <h2 className="text-xl font-semibold mb-4">Quick Actions</h2>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <Link to="/chat" className="quick-action-card">
+          <Link to="/chat" className="quick-action-card" aria-label="Start Messaging">
             <div className="flex justify-between items-center">
               <div>
                 <h3 className="font-medium">Start Messaging</h3>
@@ -110,7 +108,7 @@ const Dashboard: React.FC = () => {
             </div>
           </Link>
           
-          <Link to="/ssh" className="quick-action-card">
+          <Link to="/ssh" className="quick-action-card" aria-label="SSH Connections">
             <div className="flex justify-between items-center">
               <div>
                 <h3 className="font-medium">SSH Connections</h3>
@@ -124,7 +122,7 @@ const Dashboard: React.FC = () => {
             </div>
           </Link>
           
-          <Link to="/network" className="quick-action-card">
+          <Link to="/network-tools" className="quick-action-card" aria-label="Network Tools">
             <div className="flex justify-between items-center">
               <div>
                 <h3 className="font-medium">Network Tools</h3>
@@ -187,7 +185,7 @@ const Dashboard: React.FC = () => {
         <div className="bg-white dark:bg-gray-800 rounded-xl p-6 shadow-card">
           <div className="flex justify-between items-center mb-4">
             <h2 className="text-xl font-semibold">Network Status</h2>
-            <Link to="/network" className="text-primary-600 dark:text-primary-400 hover:underline text-sm flex items-center">
+            <Link to="/network-tools" className="text-primary-600 dark:text-primary-400 hover:underline text-sm flex items-center">
               Network tools <ArrowRightIcon className="h-4 w-4 ml-1" />
             </Link>
           </div>

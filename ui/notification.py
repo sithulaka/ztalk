@@ -17,8 +17,8 @@ class Notification(ctk.CTkFrame):
     - info: blue
     """
     
-    # Class variable to track active notifications - use weakrefs to prevent circular references
-    _active_notifications = []
+    # Class variable to track active notifications - use WeakSet to prevent circular references
+    _active_notifications = weakref.WeakSet()
     _positions: Dict[int, Dict[str, Any]] = {}
     
     def __init__(
@@ -142,7 +142,7 @@ class Notification(ctk.CTkFrame):
         self.close_btn.grid(row=0, column=2, padx=(0, 5), pady=(5, 0), sticky="ne")
         
         # Add to active notifications list and position it
-        type(self)._active_notifications.append(weakref.ref(self))
+        type(self)._active_notifications.add(self)
         
         # Show the notification with animation
         self.show()
@@ -183,19 +183,15 @@ class Notification(ctk.CTkFrame):
             x = screen_width - width - 20  # 20px padding from right edge
             
             # Find the next available vertical position
-            index = len(type(self)._active_notifications) - 1
+            active_list = [n for n in type(self)._active_notifications if n is not self]
+            index = len(active_list)
             pos_y = 20  # Start 20px from top
-            
+
             # Check existing notifications and stack below them
-            for i, notif_ref in enumerate(type(self)._active_notifications[:-1]):
-                # Get the actual notification from the weakref
-                notif = notif_ref()
-                if notif is None:
-                    continue
-                    
+            for i, notif in enumerate(active_list):
                 if i in type(self)._positions:
                     pos_y = type(self)._positions[i]["y"] + type(self)._positions[i]["height"] + 10
-            
+
             # Store this notification's position
             type(self)._positions[index] = {
                 "x": x,
@@ -252,15 +248,8 @@ class Notification(ctk.CTkFrame):
     
     def destroy(self):
         """Destroy the notification"""
-        # First remove self from active notifications list to prevent circular reference
-        for i, notif_ref in enumerate(type(self)._active_notifications):
-            notif = notif_ref()
-            if notif is self:
-                type(self)._active_notifications.pop(i)
-                # Remove from positions dictionary
-                if i in type(self)._positions:
-                    del type(self)._positions[i]
-                break
+        # First remove self from active notifications to prevent circular reference
+        type(self)._active_notifications.discard(self)
         
         # Prevent recursive calls by checking if we're already destroying
         if not hasattr(self, "_destroying") or not self._destroying:
@@ -297,14 +286,7 @@ class Notification(ctk.CTkFrame):
         pos_y = 20
         
         # Reposition each notification
-        for i, notif_ref in enumerate(type(self)._active_notifications):
-            # Get the notification object from the weakref
-            notif = notif_ref()
-            
-            # Skip if the notification has been garbage collected
-            if notif is None:
-                continue
-                
+        for i, notif in enumerate(type(self)._active_notifications):
             if i in type(self)._positions:
                 # Keep x and size, update y
                 new_positions[i] = type(self)._positions[i].copy()

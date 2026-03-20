@@ -6,11 +6,16 @@ import os
 import platform
 import sys
 import threading
+import logging
 import gc  # For garbage collection, used to find app instances
 import ipaddress  # For DHCP network validation
 from PIL import Image, ImageTk
 from .ssh_client import SSHClient
 from .notification import Notification
+from .config import DARK_THEME
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 # Import CTkMessagebox for confirmation dialogs
 try:
@@ -134,22 +139,24 @@ class ChatWindow(ctk.CTk):
         self.color_theme_options = ["Blue", "Dark Blue", "Green", "Purple", "Teal"]
         self.color_theme_var = ctk.StringVar(value="Blue")
         
-        # Define custom colors for modern UI
+        # Build UI colors from centralized config
         self.colors = {
-            "sidebar_bg": "#1E2933",
-            "main_bg": "#0E1621",
-            "chat_bg": "#17212B", 
-            "input_bg": "#242F3D",
-            "accent": "#3E92CC",
-            "accent_hover": "#2A7AB0",
-            "text_light": "#FFFFFF",
-            "text_gray": "#8696A0",
-            "message_sent": "#176B87",
-            "message_received": "#242F3D",
-            "system_message": "#FF8C00",
-            "error_message": "#E53935",
-            "success_message": "#43A047",
-            "separator": "#262D31"
+            "sidebar_bg": DARK_THEME["bg_medium"],
+            "main_bg": DARK_THEME["bg_darkest"],
+            "chat_bg": DARK_THEME["bg_dark"],
+            "input_bg": DARK_THEME["bg_light"],
+            "accent": DARK_THEME["accent_primary"],
+            "accent_hover": DARK_THEME["accent_hover"],
+            "text_light": DARK_THEME["text_light"],
+            "text_gray": DARK_THEME["text_gray"],
+            "message_sent": DARK_THEME["message_sent"],
+            "message_received": DARK_THEME["message_received"],
+            "system_message": DARK_THEME["warning"],
+            "error_message": DARK_THEME["error"],
+            "success_message": DARK_THEME["success"],
+            "separator": DARK_THEME["separator"],
+            "button_bg": DARK_THEME["bg_light"],
+            "button_hover": DARK_THEME["accent_hover"],
         }
         
         # Apply custom colors
@@ -188,8 +195,8 @@ class ChatWindow(ctk.CTk):
         status_frame = ctk.CTkFrame(user_info, fg_color="transparent", height=25)
         status_frame.pack(fill="x", anchor="w")
         
-        self.status_indicator = ctk.CTkLabel(status_frame, text="●", 
-                                           text_color="#4CAF50", 
+        self.status_indicator = ctk.CTkLabel(status_frame, text="●",
+                                           text_color=self.colors["success_message"],
                                            font=ctk.CTkFont(size=14))
         self.status_indicator.pack(side="left", padx=(0, 5))
         
@@ -457,23 +464,25 @@ class ChatWindow(ctk.CTk):
             # Broadcast message
             try:
                 self.send_broadcast(f"[From {self.username}]: {message}")
-                self.add_message("You (Broadcast)", message, "#4CAF50")  # Green for own messages
-            except Exception as e:
-                self.add_message("System", f"Failed to send broadcast: {e}", "#F44336")
-                self.show_notification("Error", f"Failed to send broadcast: {e}", "error")
+                self.add_message("You (Broadcast)", message, self.colors["success_message"])  # Green for own messages
+            except Exception:
+                logger.exception("Callback error")
+                self.add_message("System", "Failed to send broadcast", self.colors["error_message"])
+                self.show_notification("Error", "Failed to send broadcast", "error")
         else:
             # Private message - use selected_user from dropdown
             if not self.selected_user:
-                self.add_message("System", "Please select a user from the dropdown for private messages", "#F44336")
+                self.add_message("System", "Please select a user from the dropdown for private messages", self.colors["error_message"])
                 self.show_notification("Error", "No user selected for private message", "error")
                 return
-                
+
             try:
                 self.send_private_msg(self.selected_user, message)
-                self.add_message(f"You → {self.selected_user}", message, "#2196F3")  # Blue for own messages
-            except Exception as e:
-                self.add_message("System", f"Failed to send private message: {e}", "#F44336")
-                self.show_notification("Error", f"Failed to send private message: {e}", "error")
+                self.add_message(f"You → {self.selected_user}", message, DARK_THEME["info"])  # Blue for own messages
+            except Exception:
+                logger.exception("Callback error")
+                self.add_message("System", "Failed to send private message", self.colors["error_message"])
+                self.show_notification("Error", "Failed to send private message", "error")
                 return
 
         self.msg_input.delete("1.0", "end")
@@ -524,10 +533,10 @@ class ChatWindow(ctk.CTk):
             # Define tags for different message styles
             text_widget.tag_configure("sent_message", justify="right", lmargin1=100, lmargin2=100)
             text_widget.tag_configure("received_message", lmargin1=20, lmargin2=20)
-            text_widget.tag_configure("system_message", justify="center", foreground="#FF8C00")
-            text_widget.tag_configure("sender_name", foreground="#8E8E8E", font=ctk.CTkFont(size=11))
+            text_widget.tag_configure("system_message", justify="center", foreground=self.colors["system_message"])
+            text_widget.tag_configure("sender_name", foreground=self.colors["text_gray"], font=ctk.CTkFont(size=11))
             text_widget.tag_configure("private_sender", foreground="#64B5F6", font=ctk.CTkFont(size=11))
-            text_widget.tag_configure("small_text", foreground="#8E8E8E", font=ctk.CTkFont(size=10))
+            text_widget.tag_configure("small_text", foreground=self.colors["text_gray"], font=ctk.CTkFont(size=10))
         except (AttributeError, tk.TclError) as e:
             print(f"Warning: Could not configure text tags: {e}")
         
@@ -542,32 +551,37 @@ class ChatWindow(ctk.CTk):
         if self.get_peers:
             try:
                 peers = self.get_peers()
-                
+            except Exception:
+                logger.exception("Callback error")
+                self.show_notification("Error", "Failed to refresh users", "error")
+                return
+
+            try:
                 # Clear the users list
                 self.users_list.configure(state="normal")
                 self.users_list.delete("1.0", "end")
-        
+
                 # Update the dropdown for user selection
                 dropdown_values = ["Select User"]
                 dropdown_values.extend(peers)
                 self.user_dropdown.configure(values=dropdown_values)
-                
+
                 # Update the count
                 self.user_count.configure(text=f"({len(peers)})")
-        
+
                 # Display each user
                 if peers:
                     for username in peers:
                         self.users_list.insert("end", f"• {username}\n")
                 else:
                     self.users_list.insert("end", "No users online")
-        
+
                 self.users_list.configure(state="normal")  # Keep it normal to allow selection
-                
+
                 # Show notification if auto-refresh is off
                 if hasattr(self, 'auto_refresh') and not self.auto_refresh.get():
                     self.show_notification("Users Refreshed", f"Found {len(peers)} online users", "info", 2000)
-                
+
             except Exception as e:
                 self.show_notification("Error", f"Failed to refresh users: {e}", "error")
         else:
@@ -818,7 +832,7 @@ class ChatWindow(ctk.CTk):
         dhcp_warning = ctk.CTkLabel(network_settings, 
                                   text="⚠️ DHCP server should only be enabled in specific scenarios like creating ad-hoc networks.",
                                   font=ctk.CTkFont(size=12, slant="italic"),
-                                  text_color="#FFD700",
+                                  text_color=DARK_THEME["warning"],
                                   wraplength=400)
         dhcp_warning.pack(padx=15, pady=(0, 5), anchor="w")
         
@@ -1250,7 +1264,7 @@ class ChatWindow(ctk.CTk):
         status_container.pack(fill="x", pady=5, padx=10)
         
         self.network_status_indicator = ctk.CTkLabel(status_container, text="●", 
-                                                  text_color="#F44336",  # Start as red
+                                                  text_color=DARK_THEME["error"],  # Start as red
                                                   font=ctk.CTkFont(size=14))
         self.network_status_indicator.pack(side="left", padx=(0, 10))
         
@@ -1326,10 +1340,10 @@ class ChatWindow(ctk.CTk):
             
             # Update UI color based on status
             if len(interfaces) > 0:
-                self.network_status_indicator.configure(text_color="#4CAF50")  # Green
+                self.network_status_indicator.configure(text_color=self.colors["success_message"])  # Green
                 self.network_title.configure(text="Connected")
             else:
-                self.network_status_indicator.configure(text_color="#F44336")  # Red
+                self.network_status_indicator.configure(text_color=self.colors["error_message"])  # Red
                 self.network_title.configure(text="Disconnected")
                 
         except Exception as e:
@@ -2088,7 +2102,7 @@ class ChatWindow(ctk.CTk):
         warning_label = ctk.CTkLabel(main_frame, 
                                    text=warning_text,
                                    font=ctk.CTkFont(size=12, slant="italic"),
-                                   text_color="#FFD700",
+                                   text_color=DARK_THEME["warning"],
                                    wraplength=460)
         warning_label.pack(pady=(0, 15))
         

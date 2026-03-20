@@ -9,11 +9,20 @@ The central application coordinator that integrates all core components:
 """
 
 import logging
+import logging.handlers
 import threading
 import time
 import os
 import json
+import hashlib
+import base64
+import getpass
+import socket
 from typing import Dict, List, Set, Optional, Callable, Any, Tuple
+
+from cryptography.fernet import Fernet, InvalidToken
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 from core.network_manager import NetworkManager
 from core.peer_discovery import PeerDiscovery, ZTalkPeer
@@ -23,6 +32,46 @@ from core.dhcp_server import DHCPServer  # Import DHCPServer
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+
+def _setup_logging():
+    """Set up logging with a rotating file handler."""
+    log_dir = os.path.expanduser("~/.ztalk/logs/")
+    os.makedirs(log_dir, exist_ok=True)
+
+    log_level_name = os.environ.get("ZTALK_LOG_LEVEL", "INFO")
+    log_level = getattr(logging, log_level_name.upper(), logging.INFO)
+
+    handler = logging.handlers.RotatingFileHandler(
+        os.path.join(log_dir, "ztalk.log"),
+        maxBytes=5 * 1024 * 1024,
+        backupCount=3,
+    )
+    handler.setLevel(log_level)
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    handler.setFormatter(formatter)
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(log_level)
+    root_logger.addHandler(handler)
+
+
+_setup_logging()
+
+
+def _derive_fernet_key() -> bytes:
+    """Derive a Fernet encryption key from the current user and hostname."""
+    passphrase = (getpass.getuser() + socket.gethostname()).encode()
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=b"ztalk-config-salt",
+        iterations=480000,
+    )
+    key = base64.urlsafe_b64encode(kdf.derive(passphrase))
+    return key
 
 class ZTalkApp:
     """
@@ -549,18 +598,39 @@ class ZTalkApp:
     
     # Private methods
     def _load_config(self) -> Dict[str, Any]:
-        """Load configuration from file or create default"""
+        """Load configuration from file or create default.
+
+        Attempts to decrypt the config file first. If decryption fails
+        (e.g. first run migration from plain JSON), falls back to plain
+        JSON parsing.
+        """
         os.makedirs(self.CONFIG_DIRECTORY, exist_ok=True)
-        
+
         if os.path.exists(self.CONFIG_FILE):
             try:
-                with open(self.CONFIG_FILE, 'r') as f:
-                    config = json.load(f)
-                    logger.info(f"Loaded configuration from {self.CONFIG_FILE}")
+                with open(self.CONFIG_FILE, 'rb') as f:
+                    raw = f.read()
+
+                # Try encrypted first
+                try:
+                    fernet = Fernet(_derive_fernet_key())
+                    decrypted = fernet.decrypt(raw)
+                    config = json.loads(decrypted)
+                    logger.info(f"Loaded encrypted configuration from {self.CONFIG_FILE}")
                     return config
+                except (InvalidToken, Exception):
+                    pass
+
+                # Fall back to plain JSON (first-run migration)
+                try:
+                    config = json.loads(raw)
+                    logger.info(f"Loaded plain configuration from {self.CONFIG_FILE} (will encrypt on next save)")
+                    return config
+                except Exception:
+                    pass
             except Exception as e:
                 logger.error(f"Error loading config: {e}")
-                
+
         # Default configuration
         default_config = {
             "username": os.environ.get("USER", "user"),
@@ -570,27 +640,30 @@ class ZTalkApp:
             "dhcp_enabled": False,
             "dhcp_network": "192.168.100.0/24",
             "dhcp_server_ip": None,
-            "theme": "dark"
         }
-        
-        logger.info(f"Created default configuration")
+
+        logger.info("Created default configuration")
         return default_config
-        
+
     def _save_config(self):
-        """Save configuration to file"""
+        """Save configuration to file, encrypted at rest."""
         try:
             # Create config directory if it doesn't exist
             if not os.path.exists(self.CONFIG_DIRECTORY):
                 os.makedirs(self.CONFIG_DIRECTORY, exist_ok=True)
-                
+
             # Update config with current values
             self.config["username"] = self.username
             self.config["groups"] = self.groups
-            
-            # Save to file
-            with open(self.CONFIG_FILE, 'w') as f:
-                json.dump(self.config, f, indent=2)
-                
+
+            # Encrypt and save
+            fernet = Fernet(_derive_fernet_key())
+            plaintext = json.dumps(self.config, indent=2).encode()
+            encrypted = fernet.encrypt(plaintext)
+
+            with open(self.CONFIG_FILE, 'wb') as f:
+                f.write(encrypted)
+
         except Exception as e:
             logger.error(f"Error saving config: {e}")
     

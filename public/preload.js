@@ -1,5 +1,6 @@
 const { contextBridge, ipcRenderer } = require('electron');
 const axios = require('axios');
+const { io } = require('socket.io-client');
 
 // API URL for connecting to Flask backend
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
@@ -16,21 +17,27 @@ const apiClient = axios.create({
 let socket = null;
 
 // Helper to create API methods
+// GET/DELETE: createApiMethod('GET', '/endpoint', transformFn)(config)
+// POST/PUT: createApiMethod('POST', '/endpoint', transformFn)(data, config)
 const createApiMethod = (method, endpoint, transformFn) => {
   return async (...args) => {
     try {
       let response;
-      
+
       if (method === 'GET') {
-        response = await apiClient.get(endpoint, ...args);
+        // axios.get(url, config) - args[0] is config (params, headers, etc.)
+        response = await apiClient.get(endpoint, args[0]);
       } else if (method === 'POST') {
-        response = await apiClient.post(endpoint, ...args);
+        // axios.post(url, data, config) - args[0] is data, args[1] is config
+        response = await apiClient.post(endpoint, args[0], args[1]);
       } else if (method === 'PUT') {
-        response = await apiClient.put(endpoint, ...args);
+        // axios.put(url, data, config) - args[0] is data, args[1] is config
+        response = await apiClient.put(endpoint, args[0], args[1]);
       } else if (method === 'DELETE') {
-        response = await apiClient.delete(endpoint, ...args);
+        // axios.delete(url, config) - args[0] is config
+        response = await apiClient.delete(endpoint, args[0]);
       }
-      
+
       return transformFn ? transformFn(response.data) : response.data;
     } catch (error) {
       console.error(`API error (${method} ${endpoint}):`, error);
@@ -107,83 +114,83 @@ contextBridge.exposeInMainWorld('api', {
     getUsername: createApiMethod('GET', '/user/username', data => data.username),
     setUsername: (username) => createApiMethod('POST', '/user/username')({ username }),
   },
-  
+
   // Peer APIs
   peers: {
     getActivePeers: createApiMethod('GET', '/peers/active'),
     getAllPeers: createApiMethod('GET', '/peers/all'),
   },
-  
+
   // Messaging APIs
   messages: {
-    sendPrivate: (peerId, content) => 
+    sendPrivate: (peerId, content) =>
       createApiMethod('POST', `/messages/private/${peerId}`)({ content }),
-    broadcast: (content) => 
+    broadcast: (content) =>
       createApiMethod('POST', '/messages/broadcast')({ content }),
-    sendToGroup: (groupId, content) => 
+    sendToGroup: (groupId, content) =>
       createApiMethod('POST', `/messages/group/${groupId}`)({ content }),
     getHistory: (peerId, groupId, limit) => {
-      const params = new URLSearchParams();
-      if (peerId) params.append('peerId', peerId);
-      if (groupId) params.append('groupId', groupId);
-      if (limit) params.append('limit', limit.toString());
-      return createApiMethod('GET', `/messages/history?${params.toString()}`)();
+      const params = {};
+      if (peerId) params.peerId = peerId;
+      if (groupId) params.groupId = groupId;
+      if (limit) params.limit = limit.toString();
+      return createApiMethod('GET', '/messages/history')({ params });
     },
     clearHistory: (peerId, groupId) => {
-      const params = new URLSearchParams();
-      if (peerId) params.append('peerId', peerId);
-      if (groupId) params.append('groupId', groupId);
-      return createApiMethod('DELETE', `/messages/clear?${params.toString()}`)();
+      const params = {};
+      if (peerId) params.peerId = peerId;
+      if (groupId) params.groupId = groupId;
+      return createApiMethod('DELETE', '/messages/clear')({ params });
     }
   },
-  
+
   // Network APIs
   network: {
     getInterfaces: createApiMethod('GET', '/network/interfaces'),
-    getInterfaceDetails: (interfaceName) => 
+    getInterfaceDetails: (interfaceName) =>
       createApiMethod('GET', `/network/interfaces/${interfaceName}`)(),
-    configureInterface: (interfaceName, config) => 
+    configureInterface: (interfaceName, config) =>
       createApiMethod('POST', `/network/interfaces/${interfaceName}/config`)(config),
     scanNetwork: createApiMethod('GET', '/network/scan'),
   },
-  
+
   // DHCP server APIs
   dhcp: {
     getStatus: createApiMethod('GET', '/dhcp/status'),
-    configure: (enabled, network, serverIp) => 
+    configure: (enabled, network, serverIp) =>
       createApiMethod('POST', '/dhcp/config')({ enabled, network, serverIp }),
     getLeases: createApiMethod('GET', '/dhcp/leases'),
   },
-  
+
   // SSH APIs
   ssh: {
-    connect: (host, port, username, password, keyPath, name) => 
+    connect: (host, port, username, password, keyPath, name) =>
       createApiMethod('POST', '/ssh/connect')({ host, port, username, password, keyPath, name }),
-    getConnection: (connectionId) => 
+    getConnection: (connectionId) =>
       createApiMethod('GET', `/ssh/connections/${connectionId}`)(),
     getAllConnections: createApiMethod('GET', '/ssh/connections'),
-    closeConnection: (connectionId) => 
+    closeConnection: (connectionId) =>
       createApiMethod('DELETE', `/ssh/connections/${connectionId}`)(),
-    saveProfile: (name, host, port, username, keyPath) => 
+    saveProfile: (name, host, port, username, keyPath) =>
       createApiMethod('POST', '/ssh/profiles')({ name, host, port, username, keyPath }),
-    deleteProfile: (profileId) => 
+    deleteProfile: (profileId) =>
       createApiMethod('DELETE', `/ssh/profiles/${profileId}`)(),
-    getProfile: (profileId) => 
+    getProfile: (profileId) =>
       createApiMethod('GET', `/ssh/profiles/${profileId}`)(),
     getAllProfiles: createApiMethod('GET', '/ssh/profiles'),
-    connectFromProfile: (profileId, password) => 
+    connectFromProfile: (profileId, password) =>
       createApiMethod('POST', `/ssh/profiles/${profileId}/connect`)({ password }),
   },
-  
+
   // Group APIs
   groups: {
-    create: (groupName, peerIds) => 
+    create: (groupName, peerIds) =>
       createApiMethod('POST', '/groups')({ groupName, peerIds }),
-    addMember: (groupId, peerId) => 
+    addMember: (groupId, peerId) =>
       createApiMethod('POST', `/groups/${groupId}/members/${peerId}`)(),
-    removeMember: (groupId, peerId) => 
+    removeMember: (groupId, peerId) =>
       createApiMethod('DELETE', `/groups/${groupId}/members/${peerId}`)(),
-    delete: (groupId) => 
+    delete: (groupId) =>
       createApiMethod('DELETE', `/groups/${groupId}`)(),
   },
   
@@ -195,12 +202,13 @@ contextBridge.exposeInMainWorld('api', {
         socket.disconnect();
       }
       
-      // Import Socket.IO client
-      const { io } = require('socket.io-client');
-      
       // Create socket connection
       socket = io(process.env.REACT_APP_SOCKET_URL || 'http://localhost:5000', {
         transports: ['websocket'],
+        reconnection: true,
+        reconnectionDelay: 1000,
+        reconnectionDelayMax: 5000,
+        reconnectionAttempts: 10,
       });
       
       // Set up event handlers

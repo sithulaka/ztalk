@@ -20,6 +20,29 @@ print_error() {
     echo -e "${RED}[ZTalk Error]${NC} $1"
 }
 
+# Track background PIDs for cleanup
+BACKGROUND_PIDS=()
+
+cleanup() {
+    for pid in "${BACKGROUND_PIDS[@]}"; do
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+        fi
+    done
+}
+trap cleanup EXIT
+
+# Check Node.js version (require >= 14)
+check_node_version() {
+    local version=$(node --version 2>/dev/null | sed 's/v//')
+    local major=$(echo "$version" | cut -d. -f1)
+    if [ -z "$major" ] || [ "$major" -lt 14 ]; then
+        echo "ERROR: Node.js >= 14 required (found: ${version:-none})"
+        exit 1
+    fi
+    print_message "Node.js version v${version} detected."
+}
+
 # Detect if we're on Kali Linux
 detect_kali_linux() {
     if [ -f "/etc/os-release" ]; then
@@ -37,6 +60,7 @@ setup_virtual_env() {
         # Force recreation of virtual environment if it's broken
         if [ -d ".venv" ] && [ ! -f ".venv/bin/pip" ]; then
             print_warning "Existing virtual environment is broken. Recreating..."
+            echo "WARNING: Removing broken venv in 5s (Ctrl+C to cancel)"; sleep 5
             rm -rf .venv
         fi
         
@@ -47,12 +71,12 @@ setup_virtual_env() {
         else
             print_message "Creating new virtual environment..."
             
-            # On Kali Linux make sure pypy3-venv is installed
+            # On Kali Linux make sure python3-venv is installed
             if detect_kali_linux; then
-                if ! dpkg -l | grep -q pypy3-venv; then
-                    print_warning "pypy3-venv not detected. Attempting to install..."
+                if ! dpkg -l | grep -q python3-venv; then
+                    print_warning "python3-venv not detected. Attempting to install..."
                     print_message "You may need to enter your password for sudo:"
-                    sudo apt-get update && sudo apt-get install -y pypy3-venv
+                    sudo apt-get update && sudo apt-get install -y python3-venv
                 fi
             fi
             
@@ -61,11 +85,7 @@ setup_virtual_env() {
             
             # Initialize pip in the new environment
             print_message "Setting up pip in virtual environment..."
-            if detect_kali_linux; then
-                python -m ensurepip --upgrade --break-system-packages
-            else
-                python -m ensurepip --upgrade
-            fi
+            python -m ensurepip --upgrade
         fi
     else
         print_message "Using active virtual environment: $VIRTUAL_ENV"
@@ -84,15 +104,9 @@ install_dependencies() {
     print_message "Installing dependencies..."
     
     # Upgrade pip first
-    if detect_kali_linux; then
-        python -m pip install --upgrade pip --break-system-packages
-        # Install required packages
-        python -m pip install -r requirements.txt --break-system-packages
-    else
-        python -m pip install --upgrade pip
-        # Install required packages
-        python -m pip install -r requirements.txt
-    fi
+    python -m pip install --upgrade pip
+    # Install required packages
+    python -m pip install -r requirements.txt
     
     # Check if netifaces installed successfully
     if ! python -c "import netifaces" &>/dev/null; then
@@ -258,7 +272,6 @@ def _cidr6_to_netmask(cidr: int) -> str:
             mask_parts.append("0000")
     return ":".join(mask_parts)
 EOF
-            chmod +x netifaces_compat.py
         fi
     fi
     
@@ -577,7 +590,6 @@ def ServiceInfo(type_, name, addresses=None, port=None, properties=None, server=
     
     return SimpleServiceInfo(type_, name, addresses, port, properties, server)
 EOF
-            chmod +x zeroconf_compat.py
         fi
     fi
 }
@@ -626,11 +638,11 @@ run_app() {
         fi
         
         # Install npm dependencies if needed
-        if [ ! -d "node_modules" ]; then
+        if [ ! -d "node_modules" ] || [ "package-lock.json" -nt "node_modules/.package-lock.json" ]; then
             print_message "Installing npm dependencies..."
             npm install
         fi
-        
+
         # Run the combined server (API + React)
         npm run dev
     elif [ "$1" = "api" ]; then
@@ -652,7 +664,7 @@ run_app() {
             fi
             
             # Install npm dependencies if needed
-            if [ ! -d "node_modules" ]; then
+            if [ ! -d "node_modules" ] || [ "package-lock.json" -nt "node_modules/.package-lock.json" ]; then
                 print_message "Installing npm dependencies..."
                 npm install
             fi
@@ -676,6 +688,9 @@ main() {
     echo "  Zero-Configuration Networking & SSH Tool"
     echo -e "${NC}"
     
+    # Check Node.js version if available
+    check_node_version
+
     # Setup environment and dependencies
     setup_virtual_env
     install_dependencies

@@ -11,6 +11,23 @@ const api = axios.create({
   },
 });
 
+// Add response interceptor for error handling
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response) {
+      if (error.response.status === 401) {
+        console.error("Unauthorized");
+      } else if (error.response.status === 500) {
+        console.error("Server error");
+      }
+    } else if (error.request) {
+      console.error("Network error");
+    }
+    return Promise.reject(error);
+  }
+);
+
 // Define API endpoints
 export const ztalkApi = {
   // User-related endpoints

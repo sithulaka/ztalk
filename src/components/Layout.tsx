@@ -89,6 +89,7 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
               <button
                 onClick={() => setIsMobileMenuOpen(true)}
                 className="text-gray-600 dark:text-gray-300 focus:outline-none"
+                aria-label="Open menu"
               >
                 <Bars3Icon className="h-6 w-6" />
               </button>
@@ -107,13 +108,21 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
         {/* Mobile sidebar */}
         {isMobileMenuOpen && (
           <div className="fixed inset-0 z-40 md:hidden">
-            <div className="fixed inset-0 bg-gray-600 bg-opacity-75" onClick={() => setIsMobileMenuOpen(false)}></div>
+            <div
+              className="fixed inset-0 bg-gray-600 bg-opacity-75"
+              onClick={() => setIsMobileMenuOpen(false)}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setIsMobileMenuOpen(false); } }}
+              role="button"
+              tabIndex={0}
+              aria-label="Close menu"
+            ></div>
             
             <div className="relative flex flex-col w-full max-w-xs pt-5 pb-4 bg-white dark:bg-gray-800 h-full">
               <div className="absolute top-0 right-0 p-1">
                 <button
                   onClick={() => setIsMobileMenuOpen(false)}
                   className="flex items-center justify-center h-10 w-10 rounded-full focus:outline-none"
+                  aria-label="Close menu"
                 >
                   <XMarkIcon className="h-6 w-6 text-gray-600 dark:text-gray-300" />
                 </button>

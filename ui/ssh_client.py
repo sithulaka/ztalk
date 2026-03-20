@@ -143,21 +143,33 @@ class SSHClient:
         # Close the connection
         return self.ssh_manager.close_connection(connection_id)
     
+    def cleanup(self):
+        """Join all threads in self.connecting with timeout=5.
+        Callable from the parent's on_closing handler."""
+        for connection_id, thread in list(self.connecting.items()):
+            if thread.is_alive():
+                thread.join(timeout=5)
+        self.connecting.clear()
+        logger.info("SSH client cleanup complete")
+
     def stop(self):
         """Stop the SSH client and close all connections"""
         # Close all SSH connections
         self.ssh_manager.stop()
-        
+
         # Wait for terminal threads to finish
         for connection_id, (_, _, terminal_thread) in list(self.active_terminals.items()):
             if terminal_thread.is_alive():
                 # Give it a moment to clean up
                 terminal_thread.join(timeout=1.0)
-                
+
+        # Clean up connecting threads
+        self.cleanup()
+
         # Clear state
         self.active_terminals = {}
         self.connecting = {}
-        
+
         logger.info("SSH client stopped")
     
     def resize_terminal(self, connection_id: str, width: int, height: int) -> bool:

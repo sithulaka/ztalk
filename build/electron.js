@@ -1,10 +1,13 @@
-const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu, Notification, session, globalShortcut } = require('electron');
 const path = require('path');
 const url = require('url');
 const os = require('os');
 const { networkInterfaces } = require('os');
 const fs = require('fs');
 const { exec } = require('child_process');
+const axios = require('axios');
+
+const API_URL = 'http://localhost:5000/api';
 
 // Keep a global reference of the window object to avoid garbage collection
 let mainWindow;
@@ -42,11 +45,6 @@ function createWindow() {
     }
   });
 
-  // Open DevTools automatically in development mode
-  if (isDev) {
-    mainWindow.webContents.openDevTools();
-  }
-
   // Show window when it's ready to avoid flickering
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
@@ -60,7 +58,29 @@ function createWindow() {
 
 // This method will be called when Electron has finished
 // initialization and is ready to create browser windows.
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  // #6: Add Content Security Policy headers
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    callback({ responseHeaders: { ...details.responseHeaders,
+      'Content-Security-Policy': ["default-src 'self'; script-src 'self'; connect-src 'self' http://localhost:5000 ws://localhost:5000; style-src 'self' 'unsafe-inline'"]
+    }})
+  });
+
+  // #55: Register keyboard shortcut to toggle DevTools
+  const shortcut = process.platform === 'darwin' ? 'Cmd+Option+I' : 'Ctrl+Shift+I';
+  globalShortcut.register(shortcut, () => {
+    if (mainWindow) {
+      mainWindow.webContents.toggleDevTools();
+    }
+  });
+
+  createWindow();
+});
+
+// Unregister shortcuts before quitting
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll();
+});
 
 // Quit when all windows are closed, except on macOS.
 app.on('window-all-closed', function () {
@@ -107,14 +127,8 @@ ipcMain.handle('get-network-interfaces', async () => {
 // Get IP configuration and stats
 ipcMain.handle('get-ip-config', async (event, interfaceName) => {
   try {
-    // This would be platform-specific code to get IP configuration
-    // For now, we'll return dummy data
-    return {
-      ip: '192.168.1.5',
-      netmask: '255.255.255.0',
-      gateway: '192.168.1.1',
-      dns: ['8.8.8.8', '8.8.4.4']
-    };
+    const response = await axios.get(`${API_URL}/network/interfaces/${interfaceName}`);
+    return response.data;
   } catch (error) {
     console.error('Error getting IP config:', error);
     throw error;
@@ -124,13 +138,8 @@ ipcMain.handle('get-ip-config', async (event, interfaceName) => {
 // Apply IP configuration
 ipcMain.handle('apply-ip-config', async (event, config) => {
   try {
-    // This would be platform-specific code to set IP configuration
-    console.log('Applying IP config:', config);
-    
-    // Simulate delay
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    
-    return { success: true };
+    const response = await axios.post(`${API_URL}/network/interfaces/${config.interfaceName}/config`, config);
+    return response.data;
   } catch (error) {
     console.error('Error applying IP config:', error);
     throw error;
@@ -140,15 +149,8 @@ ipcMain.handle('apply-ip-config', async (event, config) => {
 // Scan network for devices
 ipcMain.handle('scan-network', async () => {
   try {
-    // This would be platform-specific code to scan network
-    // For now, we'll return dummy data
-    return [
-      { ip: '192.168.1.1', mac: '00:11:22:33:44:55', name: 'Router', isActive: true },
-      { ip: '192.168.1.5', mac: '11:22:33:44:55:66', name: 'This device', isActive: true },
-      { ip: '192.168.1.10', mac: '22:33:44:55:66:77', name: 'Desktop-123', isActive: true },
-      { ip: '192.168.1.15', mac: '33:44:55:66:77:88', name: 'Laptop-456', isActive: true },
-      { ip: '192.168.1.20', mac: '44:55:66:77:88:99', name: 'Phone-789', isActive: false }
-    ];
+    const response = await axios.get(`${API_URL}/network/scan`);
+    return response.data;
   } catch (error) {
     console.error('Error scanning network:', error);
     throw error;
@@ -158,18 +160,8 @@ ipcMain.handle('scan-network', async () => {
 // Ping host
 ipcMain.handle('ping-host', async (event, target) => {
   try {
-    // This would be platform-specific code to ping host
-    console.log('Pinging:', target);
-    
-    // Simulate delay and results
-    await new Promise(resolve => setTimeout(resolve, 3000));
-    
-    return {
-      min: 10,
-      avg: 15,
-      max: 30,
-      loss: Math.random() > 0.8 ? 5 : 0
-    };
+    const response = await axios.post(`${API_URL}/network/ping`, { target });
+    return response.data;
   } catch (error) {
     console.error('Error pinging host:', error);
     throw error;
@@ -179,19 +171,8 @@ ipcMain.handle('ping-host', async (event, target) => {
 // SSH operations
 ipcMain.handle('ssh-connect', async (event, connection) => {
   try {
-    // This would use ssh2 to connect
-    console.log('Connecting to SSH server:', connection);
-    
-    // Simulate delay
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    
-    // Simulate success/failure
-    const success = Math.random() > 0.2;
-    if (!success) {
-      throw new Error('Connection refused');
-    }
-    
-    return { success: true };
+    const response = await axios.post(`${API_URL}/ssh/connect`, connection);
+    return response.data;
   } catch (error) {
     console.error('Error connecting to SSH server:', error);
     throw error;

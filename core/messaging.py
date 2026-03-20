@@ -5,6 +5,8 @@ Handles communication between peers, message routing, and delivery guarantees.
 Supports both group and private messages with encryption.
 """
 
+import collections
+import os
 import socket
 import threading
 import time
@@ -136,15 +138,24 @@ class MessageHandler:
         self.sender_thread = None
         self.message_handlers: List[Callable[[Message], None]] = []
         self.pending_acks: Dict[str, Message] = {}  # Messages waiting for acknowledgment
+        self._pending_acks_lock = threading.Lock()
+        self._active_timers: Dict[str, threading.Timer] = {}  # message_id -> timer
         
         # Message history - stores recent messages
         self.message_history: List[Message] = []
         self.private_histories: Dict[str, List[Message]] = {}  # peer_id -> message history
         self.group_histories: Dict[str, List[Message]] = {}    # group_id -> message history
         
+        # Message deduplication (#29)
+        self._seen_message_ids = collections.OrderedDict()
+
+        # History thread safety (#30)
+        self._history_lock = threading.Lock()
+
         # Encryption
         self.encryption_enabled = False
         self.encryption_key = None
+        self._encryption_password = None
         
     def start(self):
         """Start the message handler"""
@@ -171,6 +182,12 @@ class MessageHandler:
             
         except Exception as e:
             logger.error(f"Error starting message handler: {e}")
+            if self.socket:
+                try:
+                    self.socket.close()
+                except Exception:
+                    pass
+                self.socket = None
             self.running = False
             return False
     
@@ -191,7 +208,12 @@ class MessageHandler:
             
         if self.sender_thread and self.sender_thread.is_alive():
             self.sender_thread.join(timeout=1.0)
-            
+
+        # Cancel all active retry timers
+        for timer in self._active_timers.values():
+            timer.cancel()
+        self._active_timers.clear()
+
         logger.info("Message handler stopped")
         return True
     
@@ -230,7 +252,7 @@ class MessageHandler:
         self._store_message(message)
         
         # If we don't have an address, we can't send
-        if not recipient_address and not metadata or "broadcast" not in metadata:
+        if not recipient_address and (not metadata or "broadcast" not in metadata):
             logger.warning(f"No address for message to {recipient_id or group_id}")
             return None
             
@@ -315,26 +337,29 @@ class MessageHandler:
     
     def get_private_history(self, peer_id: str, limit: int = 50) -> List[Message]:
         """Get message history with a specific peer"""
-        if peer_id not in self.private_histories:
-            return []
-        return self.private_histories[peer_id][-limit:] if self.private_histories[peer_id] else []
-    
+        with self._history_lock:
+            if peer_id not in self.private_histories:
+                return []
+            return self.private_histories[peer_id][-limit:] if self.private_histories[peer_id] else []
+
     def get_group_history(self, group_id: str, limit: int = 50) -> List[Message]:
         """Get message history for a specific group"""
-        if group_id not in self.group_histories:
-            return []
-        return self.group_histories[group_id][-limit:] if self.group_histories[group_id] else []
-    
+        with self._history_lock:
+            if group_id not in self.group_histories:
+                return []
+            return self.group_histories[group_id][-limit:] if self.group_histories[group_id] else []
+
     def clear_history(self, peer_id: Optional[str] = None, group_id: Optional[str] = None):
         """Clear message history"""
-        if peer_id:
-            if peer_id in self.private_histories:
-                self.private_histories[peer_id] = []
-        elif group_id:
-            if group_id in self.group_histories:
-                self.group_histories[group_id] = []
-        else:
-            self.message_history = []
+        with self._history_lock:
+            if peer_id:
+                if peer_id in self.private_histories:
+                    self.private_histories[peer_id] = []
+            elif group_id:
+                if group_id in self.group_histories:
+                    self.group_histories[group_id] = []
+            else:
+                self.message_history = []
     
     # Encryption methods
     def enable_encryption(self, password: str) -> bool:
@@ -342,29 +367,32 @@ class MessageHandler:
         if not ENCRYPTION_AVAILABLE:
             logger.warning("Encryption requested but cryptography package not available")
             return False
-            
+
         try:
-            # Generate a key from the password
-            salt = b'ZTalk_salt_value'  # This should be randomly generated and shared
-            kdf = PBKDF2HMAC(
-                algorithm=hashes.SHA256(),
-                length=32,
-                salt=salt,
-                iterations=100000,
-            )
-            key = base64.urlsafe_b64encode(kdf.derive(password.encode()))
-            self.encryption_key = key
+            self._encryption_password = password
             self.encryption_enabled = True
             logger.info("Encryption enabled")
             return True
         except Exception as e:
             logger.error(f"Error enabling encryption: {e}")
             return False
+
+    @staticmethod
+    def _derive_key(password: str, salt: bytes) -> bytes:
+        """Derive a Fernet key from a password and salt"""
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=salt,
+            iterations=100000,
+        )
+        return base64.urlsafe_b64encode(kdf.derive(password.encode()))
     
     def disable_encryption(self):
         """Disable message encryption"""
         self.encryption_enabled = False
         self.encryption_key = None
+        self._encryption_password = None
         logger.info("Encryption disabled")
         
     # Private methods
@@ -392,7 +420,7 @@ class MessageHandler:
                                 logger.error(f"Error in message handler: {e}")
                         
                         # Send acknowledgment for chat messages if requested
-                        if message.msg_type == MessageType.CHAT and message.metadata.get("needs_ack"):
+                        if message.msg_type == MessageType.CHAT and message.metadata and message.metadata.get("needs_ack"):
                             self._send_acknowledgment(message, addr)
                             
                 except socket.timeout:
@@ -436,36 +464,64 @@ class MessageHandler:
     def _process_incoming_message(self, data: bytes, addr: Tuple[str, int]) -> Optional[Message]:
         """Process an incoming message"""
         try:
-            # Decrypt if necessary
-            if self.encryption_enabled and self.encryption_key:
+            # Decrypt if necessary (#3: read 16-byte salt prefix)
+            if self.encryption_enabled and self._encryption_password:
                 try:
-                    f = Fernet(self.encryption_key)
-                    data = f.decrypt(data)
+                    if len(data) < 16:
+                        raise ValueError("Encrypted payload too short to contain salt")
+                    salt = data[:16]
+                    ciphertext = data[16:]
+                    key = self._derive_key(self._encryption_password, salt)
+                    f = Fernet(key)
+                    data = f.decrypt(ciphertext)
                 except Exception as e:
                     logger.warning(f"Failed to decrypt message from {addr}: {e}")
+                    # #31: Send error ACK back to sender on decryption failure
+                    error_ack = Message(
+                        sender_id=self.peer_id,
+                        sender_name=self.username,
+                        content="",
+                        msg_type=MessageType.ACK,
+                        metadata={"error": "decryption_failed"}
+                    )
+                    self._send_message_to_address(error_ack, addr)
                     return None
-            
+
             # Parse the JSON data
             message_dict = json.loads(data.decode('utf-8'))
-            
+
             # Create a Message object
             message = Message.from_dict(message_dict)
-            
+
+            # #29: Deduplicate messages
+            if message.id in self._seen_message_ids:
+                logger.debug(f"Duplicate message {message.id[:8]} ignored")
+                return None
+            self._seen_message_ids[message.id] = True
+            if len(self._seen_message_ids) > 1000:
+                self._seen_message_ids.popitem(last=False)
+
             # Check if this is an ACK
             if message.msg_type == MessageType.ACK:
                 # Find the original message that's being acknowledged
-                ack_id = message.metadata.get("ack_for")
-                if ack_id and ack_id in self.pending_acks:
-                    original_msg = self.pending_acks.pop(ack_id)
-                    original_msg.delivered = True
-                    logger.debug(f"Message {ack_id[:8]} acknowledged by {message.sender_id}")
+                ack_id = message.metadata.get("ack_for") if message.metadata else None
+                if ack_id:
+                    with self._pending_acks_lock:
+                        if ack_id in self.pending_acks:
+                            original_msg = self.pending_acks.pop(ack_id)
+                            original_msg.delivered = True
+                            logger.debug(f"Message {ack_id[:8]} acknowledged by {message.sender_id}")
+                    # #16: Cancel and remove timer for the acked message
+                    timer = self._active_timers.pop(ack_id, None)
+                    if timer is not None:
+                        timer.cancel()
                 return None  # Don't forward ACK messages to handlers
-            
+
             # Store the message in appropriate history
             self._store_message(message)
-            
+
             return message
-            
+
         except json.JSONDecodeError:
             logger.warning(f"Received invalid JSON data from {addr}")
             return None
@@ -479,11 +535,13 @@ class MessageHandler:
             # Convert message to JSON
             message_data = json.dumps(message.to_dict()).encode('utf-8')
             
-            # Encrypt if necessary
-            if self.encryption_enabled and self.encryption_key:
+            # Encrypt if necessary (#3: prepend random 16-byte salt)
+            if self.encryption_enabled and self._encryption_password:
                 try:
-                    f = Fernet(self.encryption_key)
-                    message_data = f.encrypt(message_data)
+                    salt = os.urandom(16)
+                    key = self._derive_key(self._encryption_password, salt)
+                    f = Fernet(key)
+                    message_data = salt + f.encrypt(message_data)
                 except Exception as e:
                     logger.error(f"Failed to encrypt message: {e}")
                     return False
@@ -492,11 +550,14 @@ class MessageHandler:
             self.socket.sendto(message_data, addr)
             
             # If needs acknowledgment, store in pending
-            if message.metadata.get("needs_ack") and message.msg_type == MessageType.CHAT:
-                self.pending_acks[message.id] = message
-                
+            if message.metadata and message.metadata.get("needs_ack") and message.msg_type == MessageType.CHAT:
+                with self._pending_acks_lock:
+                    self.pending_acks[message.id] = message
+
                 # Start a timer to retry if no ACK received
-                threading.Timer(self.RETRY_DELAY, self._check_ack, args=[message.id, addr, 1]).start()
+                timer = threading.Timer(self.RETRY_DELAY, self._check_ack, args=[message.id, addr, 1])
+                self._active_timers[message.id] = timer
+                timer.start()
             
             return True
             
@@ -506,23 +567,28 @@ class MessageHandler:
     
     def _check_ack(self, message_id: str, addr: Tuple[str, int], attempt: int):
         """Check if a message has been acknowledged, retry if not"""
-        if message_id not in self.pending_acks:
-            # Message has been acknowledged, nothing to do
-            return
-            
-        if attempt >= self.RETRY_ATTEMPTS:
-            # Max attempts reached, give up
-            logger.warning(f"Message {message_id[:8]} not acknowledged after {attempt} attempts")
-            # Could notify UI here
-            return
-            
-        # Retry sending the message
-        logger.debug(f"Retrying message {message_id[:8]}, attempt {attempt+1}")
-        message = self.pending_acks[message_id]
+        with self._pending_acks_lock:
+            if message_id not in self.pending_acks:
+                # Message has been acknowledged, nothing to do
+                self._active_timers.pop(message_id, None)
+                return
+
+            if attempt >= self.RETRY_ATTEMPTS:
+                # Max attempts reached, give up
+                logger.warning(f"Message {message_id[:8]} not acknowledged after {attempt} attempts")
+                self._active_timers.pop(message_id, None)
+                return
+
+            # Retry sending the message
+            logger.debug(f"Retrying message {message_id[:8]}, attempt {attempt+1}")
+            message = self.pending_acks[message_id]
+
         self._send_message_to_address(message, addr)
-        
+
         # Schedule another check
-        threading.Timer(self.RETRY_DELAY, self._check_ack, args=[message_id, addr, attempt+1]).start()
+        timer = threading.Timer(self.RETRY_DELAY, self._check_ack, args=[message_id, addr, attempt+1])
+        self._active_timers[message_id] = timer
+        timer.start()
     
     def _send_acknowledgment(self, message: Message, addr: Tuple[str, int]):
         """Send an acknowledgment for a received message"""
@@ -540,33 +606,34 @@ class MessageHandler:
     
     def _store_message(self, message: Message):
         """Store a message in the appropriate history"""
-        # Store in general history for all except ACKs
-        if message.msg_type != MessageType.ACK:
-            self.message_history.append(message)
-            # Trim if needed
-            if len(self.message_history) > self.MESSAGE_HISTORY_LIMIT:
-                self.message_history = self.message_history[-self.MESSAGE_HISTORY_LIMIT:]
-        
-        # Store in private history if it's a private message
-        if message.recipient_id or message.sender_id != self.peer_id:
-            peer_id = message.recipient_id if message.sender_id == self.peer_id else message.sender_id
-            if peer_id:
-                if peer_id not in self.private_histories:
-                    self.private_histories[peer_id] = []
-                    
-                self.private_histories[peer_id].append(message)
-                
+        with self._history_lock:
+            # Store in general history for all except ACKs
+            if message.msg_type != MessageType.ACK:
+                self.message_history.append(message)
                 # Trim if needed
-                if len(self.private_histories[peer_id]) > self.MESSAGE_HISTORY_LIMIT:
-                    self.private_histories[peer_id] = self.private_histories[peer_id][-self.MESSAGE_HISTORY_LIMIT:]
-        
-        # Store in group history if it's a group message
-        if message.group_id:
-            if message.group_id not in self.group_histories:
-                self.group_histories[message.group_id] = []
-                
-            self.group_histories[message.group_id].append(message)
-            
-            # Trim if needed
-            if len(self.group_histories[message.group_id]) > self.MESSAGE_HISTORY_LIMIT:
-                self.group_histories[message.group_id] = self.group_histories[message.group_id][-self.MESSAGE_HISTORY_LIMIT:]
+                if len(self.message_history) > self.MESSAGE_HISTORY_LIMIT:
+                    self.message_history = self.message_history[-self.MESSAGE_HISTORY_LIMIT:]
+
+            # Store in private history if it's a private message
+            if message.recipient_id or message.sender_id != self.peer_id:
+                peer_id = message.recipient_id if message.sender_id == self.peer_id else message.sender_id
+                if peer_id:
+                    if peer_id not in self.private_histories:
+                        self.private_histories[peer_id] = []
+
+                    self.private_histories[peer_id].append(message)
+
+                    # Trim if needed
+                    if len(self.private_histories[peer_id]) > self.MESSAGE_HISTORY_LIMIT:
+                        self.private_histories[peer_id] = self.private_histories[peer_id][-self.MESSAGE_HISTORY_LIMIT:]
+
+            # Store in group history if it's a group message
+            if message.group_id:
+                if message.group_id not in self.group_histories:
+                    self.group_histories[message.group_id] = []
+
+                self.group_histories[message.group_id].append(message)
+
+                # Trim if needed
+                if len(self.group_histories[message.group_id]) > self.MESSAGE_HISTORY_LIMIT:
+                    self.group_histories[message.group_id] = self.group_histories[message.group_id][-self.MESSAGE_HISTORY_LIMIT:]

@@ -19,6 +19,29 @@ from pathlib import Path
 # Configure logging
 logger = logging.getLogger(__name__)
 
+try:
+    from core.ssh_manager import ZTalkHostKeyPolicy
+except ImportError:
+    # Fallback: define the policy locally if the import path doesn't resolve
+    class ZTalkHostKeyPolicy(paramiko.MissingHostKeyPolicy):
+        """
+        Custom host key policy that stores known hosts in ~/.ztalk/known_hosts.
+        If the host is known and the key matches, accept it.
+        If unknown, log a warning and auto-add it.
+        """
+
+        def __init__(self):
+            self.known_hosts_path = os.path.join(os.path.expanduser('~'), '.ztalk', 'known_hosts')
+            os.makedirs(os.path.dirname(self.known_hosts_path), exist_ok=True)
+
+        def missing_host_key(self, client, hostname, key):
+            logger.warning(f"Unknown host key for {hostname}, auto-adding to {self.known_hosts_path}")
+            client.get_host_keys().add(hostname, key.get_name(), key)
+            try:
+                client.get_host_keys().save(self.known_hosts_path)
+            except Exception:
+                logger.exception(f"Failed to save known hosts to {self.known_hosts_path}")
+
 def close_ssh_connection(conn):
     """
     Close an SSH connection object.
@@ -156,7 +179,7 @@ def upload_using_scp(local_path: str, remote_path: str, host: str, port: int = 2
     try:
         # Create SSH client
         client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.set_missing_host_key_policy(ZTalkHostKeyPolicy())
         
         # Connect to server
         connect_kwargs = {
@@ -175,9 +198,15 @@ def upload_using_scp(local_path: str, remote_path: str, host: str, port: int = 2
             else:
                 logger.error("Failed to load SSH key")
                 return False
-                
+
+        try:
+            client.load_host_keys(ZTalkHostKeyPolicy().known_hosts_path)
+        except Exception:
+            pass
+
+        logger.info(f"SSH connect to {host}:{port} as {username}")
         client.connect(**connect_kwargs)
-        
+
         # Create SCP client
         with client.open_sftp() as sftp:
             # Get file size for progress reporting
@@ -232,7 +261,7 @@ def download_using_scp(remote_path: str, local_path: str, host: str, port: int =
             
         # Create SSH client
         client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.set_missing_host_key_policy(ZTalkHostKeyPolicy())
         
         # Connect to server
         connect_kwargs = {
@@ -251,9 +280,15 @@ def download_using_scp(remote_path: str, local_path: str, host: str, port: int =
             else:
                 logger.error("Failed to load SSH key")
                 return False
-                
+
+        try:
+            client.load_host_keys(ZTalkHostKeyPolicy().known_hosts_path)
+        except Exception:
+            pass
+
+        logger.info(f"SSH connect to {host}:{port} as {username}")
         client.connect(**connect_kwargs)
-        
+
         # Create SCP client
         with client.open_sftp() as sftp:
             # Get file stats for progress reporting
@@ -318,7 +353,7 @@ def create_ssh_tunnel(local_port: int, remote_host: str, remote_port: int,
             
         # Create SSH client
         client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.set_missing_host_key_policy(ZTalkHostKeyPolicy())
         
         # Connect to SSH server
         connect_kwargs = {
@@ -337,9 +372,15 @@ def create_ssh_tunnel(local_port: int, remote_host: str, remote_port: int,
             else:
                 logger.error("Failed to load SSH key")
                 return None
-                
+
+        try:
+            client.load_host_keys(ZTalkHostKeyPolicy().known_hosts_path)
+        except Exception:
+            pass
+
+        logger.info(f"SSH connect to {ssh_host}:{ssh_port} as {username}")
         client.connect(**connect_kwargs)
-        
+
         # Start port forwarding
         transport = client.get_transport()
         transport.request_port_forward('127.0.0.1', local_port, remote_host, remote_port)
@@ -401,7 +442,7 @@ def execute_remote_command(host: str, port: int = 22, username: str = "",
     try:
         # Create SSH client
         client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.set_missing_host_key_policy(ZTalkHostKeyPolicy())
         
         # Connect to server
         connect_kwargs = {
@@ -420,9 +461,15 @@ def execute_remote_command(host: str, port: int = 22, username: str = "",
             else:
                 logger.error("Failed to load SSH key")
                 return (False, "", "Failed to load SSH key")
-                
+
+        try:
+            client.load_host_keys(ZTalkHostKeyPolicy().known_hosts_path)
+        except Exception:
+            pass
+
+        logger.info(f"SSH connect to {host}:{port} as {username}")
         client.connect(**connect_kwargs)
-        
+
         # Execute command
         stdin, stdout, stderr = client.exec_command(command, timeout=timeout)
         stdin.close()
@@ -582,15 +629,21 @@ def deploy_ssh_key(host: str, port: int = 22, username: str = "",
             
         # Create SSH client
         client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.set_missing_host_key_policy(ZTalkHostKeyPolicy())
         
         # Connect to server with password
         if not password:
             logger.error("Password required to deploy key")
             return False
             
+        try:
+            client.load_host_keys(ZTalkHostKeyPolicy().known_hosts_path)
+        except Exception:
+            pass
+
+        logger.info(f"SSH connect to {host}:{port} as {username}")
         client.connect(hostname=host, port=port, username=username, password=password, timeout=10)
-        
+
         # Ensure .ssh directory exists with proper permissions
         setup_commands = [
             "mkdir -p ~/.ssh",

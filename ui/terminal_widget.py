@@ -9,7 +9,8 @@ import sys
 import time
 import threading
 import logging
-from typing import Optional, Callable, List, Dict, Any, Tuple
+import collections
+from typing import Optional, Callable, List, Dict, Any, Tuple, Deque
 
 # Use prompt_toolkit for the terminal UI
 from prompt_toolkit.application import Application
@@ -54,7 +55,7 @@ class TerminalWidget:
         
         # Terminal state
         self.connected = False
-        self.history_lines: List[str] = []
+        self.history_lines: Deque[str] = collections.deque(maxlen=10000)
         self.pending_output = ""
         self.ansi_color_map = {
             # Regular colors
@@ -121,7 +122,10 @@ class TerminalWidget:
         def _(event):
             """Exit on Ctrl+D"""
             if self.on_exit_callback:
-                self.on_exit_callback()
+                try:
+                    self.on_exit_callback()
+                except Exception:
+                    logger.exception("Callback error")
             event.app.exit()
             
         # Style
@@ -190,12 +194,8 @@ class TerminalWidget:
         if text and not text.endswith('\n'):
             self.pending_output = lines.pop()
             
-        # Add new lines to history
+        # Add new lines to history (deque maxlen handles trimming automatically)
         self.history_lines.extend(lines)
-        
-        # Trim history if needed
-        if len(self.history_lines) > self.max_history_size:
-            self.history_lines = self.history_lines[-self.max_history_size:]
             
         # Force redraw
         try:
@@ -224,7 +224,7 @@ class TerminalWidget:
     
     def clear(self):
         """Clear the terminal"""
-        self.history_lines = []
+        self.history_lines.clear()
         self.pending_output = ""
         try:
             self.content.invalidate()
@@ -246,7 +246,10 @@ class TerminalWidget:
         
         # Call the input callback
         if self.on_input_callback:
-            self.on_input_callback(text)
+            try:
+                self.on_input_callback(text)
+            except Exception:
+                logger.exception("Callback error")
             
         # Don't clear the prompt, as it will be overwritten when the result arrives
         return False

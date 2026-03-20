@@ -1,0 +1,144 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build React app
+        run: npm run build
+
+      - name: Build Electron packages (Linux)
+        run: npx electron-builder --linux deb rpm AppImage --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-builds
+          path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.AppImage
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build React app
+        run: npm run build
+
+      - name: Build Electron packages (Windows)
+        run: npx electron-builder --win nsis --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-builds
+          path: dist/*.exe
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build React app
+        run: npm run build
+
+      - name: Build Electron packages (macOS)
+        run: npx electron-builder --mac dmg --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-builds
+          path: dist/*.dmg
+
+  release:
+    needs: [build-linux, build-windows, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist-all
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ZTalk ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            dist-all/linux-builds/*.deb
+            dist-all/linux-builds/*.rpm
+            dist-all/linux-builds/*.AppImage
+            dist-all/windows-builds/*.exe
+            dist-all/macos-builds/*.dmg
+          body: |
+            ## ZTalk ${{ github.ref_name }}
+
+            A local network chat and tools application built with Electron + React + Python.
+
+            ### Downloads
+
+            | Platform | File | Notes |
+            |----------|------|-------|
+            | 🐧 Linux (Debian/Ubuntu) | `.deb` | `sudo dpkg -i ztalk_*.deb` |
+            | 🐧 Linux (Fedora/RHEL) | `.rpm` | `sudo rpm -i ztalk_*.rpm` |
+            | 🐧 Linux (Universal) | `.AppImage` | `chmod +x ztalk_*.AppImage && ./ztalk_*.AppImage` |
+            | 🪟 Windows | `.exe` | Run installer |
+            | 🍎 macOS | `.dmg` | Open and drag to Applications |
+
+            ### Requirements
+            - Python 3.8+
+            - Local network access
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

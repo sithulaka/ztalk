@@ -109,6 +109,7 @@ class PeerDiscovery:
         
         # Peer tracking
         self.peers: Dict[str, ZTalkPeer] = {}  # peer_id -> ZTalkPeer
+        self._peers_lock = threading.Lock()
         self.peer_listeners: List[Callable[[str, ZTalkPeer], None]] = []  # Callbacks for peer events
         
         # Create a unique identifier for this instance
@@ -118,7 +119,7 @@ class PeerDiscovery:
         self.hostname = socket.gethostname()
         try:
             self.username = platform.node() or self.hostname.split('.')[0] 
-        except Exception:
+        except (OSError, AttributeError, ValueError):
             self.username = self.hostname
             
         # Zeroconf components
@@ -144,7 +145,8 @@ class PeerDiscovery:
         self.zeroconf = Zeroconf()
         
         # Register our service
-        self._register_service()
+        if not self._register_service():
+            logger.warning("Failed to register service during startup")
         
         # Start discovering peers
         self.browser = ServiceBrowser(self.zeroconf, self.SERVICE_TYPE, self)
@@ -192,15 +194,18 @@ class PeerDiscovery:
             
     def get_all_peers(self) -> List[ZTalkPeer]:
         """Get all discovered peers"""
-        return list(self.peers.values())
+        with self._peers_lock:
+            return list(self.peers.values())
     
     def get_active_peers(self) -> List[ZTalkPeer]:
         """Get only active peers"""
-        return [peer for peer in self.peers.values() if peer.is_active]
+        with self._peers_lock:
+            return [peer for peer in self.peers.values() if peer.is_active]
         
     def get_peer(self, peer_id: str) -> Optional[ZTalkPeer]:
         """Get a specific peer by ID"""
-        return self.peers.get(peer_id)
+        with self._peers_lock:
+            return self.peers.get(peer_id)
     
     def update_username(self, new_username: str):
         """Update this instance's displayed username"""
@@ -237,37 +242,39 @@ class PeerDiscovery:
                 # Skip our own instance
                 if peer_id == self.instance_id:
                     return
-                
+
                 # Create or update peer
-                if peer_id in self.peers:
-                    peer = self.peers[peer_id]
-                    peer.ip_address = ip_address
-                    peer.port = port
-                    peer.name = username
-                    peer.last_seen = time.time()
-                    peer.is_active = True
-                    peer.properties = properties
-                    self._notify_peer_listeners("updated", peer)
-                else:
-                    peer = ZTalkPeer(peer_id, username, ip_address, port, properties)
-                    self.peers[peer_id] = peer
-                    self._notify_peer_listeners("added", peer)
+                with self._peers_lock:
+                    if peer_id in self.peers:
+                        peer = self.peers[peer_id]
+                        peer.ip_address = ip_address
+                        peer.port = port
+                        peer.name = username
+                        peer.last_seen = time.time()
+                        peer.is_active = True
+                        peer.properties = properties
+                        self._notify_peer_listeners("updated", peer)
+                    else:
+                        peer = ZTalkPeer(peer_id, username, ip_address, port, properties)
+                        self.peers[peer_id] = peer
+                        self._notify_peer_listeners("added", peer)
                 
                 logger.debug(f"Discovered peer: {username} ({ip_address}:{port})")
-        except Exception as e:
-            logger.error(f"Error adding service: {e}")
+        except (OSError, KeyError, ValueError, TypeError) as e:
+            logger.exception("Error adding service: %s", e)
     
     def remove_service(self, zeroconf, service_type, name):
         """Called by Zeroconf when a service is removed"""
         try:
             # Find the peer with this service name
-            for peer_id, peer in list(self.peers.items()):
-                if peer.name in name:
-                    peer.is_active = False
-                    self._notify_peer_listeners("removed", peer)
-                    logger.debug(f"Peer removed: {peer.name} ({peer.ip_address})")
-        except Exception as e:
-            logger.error(f"Error removing service: {e}")
+            with self._peers_lock:
+                for peer_id, peer in list(self.peers.items()):
+                    if peer.name == name:
+                        peer.is_active = False
+                        self._notify_peer_listeners("removed", peer)
+                        logger.debug(f"Peer removed: {peer.name} ({peer.ip_address})")
+        except (OSError, KeyError, ValueError) as e:
+            logger.exception("Error removing service: %s", e)
     
     def update_service(self, zeroconf, service_type, name):
         """Called by Zeroconf when a service is updated"""
@@ -318,8 +325,8 @@ class PeerDiscovery:
             logger.info(f"Registered service: {self.username} at {ip_address}:{self.port}")
             return True
             
-        except Exception as e:
-            logger.error(f"Error registering service: {e}")
+        except (OSError, ValueError, TypeError) as e:
+            logger.exception("Error registering service: %s", e)
             return False
     
     def _check_peer_status(self):
@@ -330,14 +337,15 @@ class PeerDiscovery:
                 timeout_threshold = 90  # seconds
                 
                 # Check each peer's last seen time
-                for peer_id, peer in list(self.peers.items()):
-                    if peer.is_active and (current_time - peer.last_seen) > timeout_threshold:
-                        # Peer hasn't been seen for a while, mark as inactive
-                        peer.is_active = False
-                        self._notify_peer_listeners("timeout", peer)
-                        logger.debug(f"Peer timed out: {peer.name} ({peer.ip_address})")
-            except Exception as e:
-                logger.error(f"Error checking peer status: {e}")
+                with self._peers_lock:
+                    for peer_id, peer in list(self.peers.items()):
+                        if peer.is_active and (current_time - peer.last_seen) > timeout_threshold:
+                            # Peer hasn't been seen for a while, mark as inactive
+                            peer.is_active = False
+                            self._notify_peer_listeners("timeout", peer)
+                            logger.debug(f"Peer timed out: {peer.name} ({peer.ip_address})")
+            except (OSError, KeyError, ValueError, RuntimeError) as e:
+                logger.exception("Error checking peer status: %s", e)
                 
             # Sleep for the check interval
             time.sleep(self.check_interval)
@@ -347,8 +355,8 @@ class PeerDiscovery:
         for callback in self.peer_listeners:
             try:
                 callback(event_type, peer)
-            except Exception as e:
-                logger.error(f"Error in peer listener callback: {e}")
+            except (TypeError, ValueError, RuntimeError, OSError) as e:
+                logger.exception("Error in peer listener callback: %s", e)
     
     def _on_interface_change(self, new_interfaces, old_interfaces):
         """Called when network interfaces change"""

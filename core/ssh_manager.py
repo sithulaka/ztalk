@@ -19,6 +19,26 @@ from pathlib import Path
 # Configure logging
 logger = logging.getLogger(__name__)
 
+class ZTalkHostKeyPolicy(paramiko.MissingHostKeyPolicy):
+    """
+    Custom host key policy that stores known hosts in ~/.ztalk/known_hosts.
+    If the host is known and the key matches, accept it.
+    If unknown, log a warning and auto-add it.
+    """
+
+    def __init__(self):
+        self.known_hosts_path = os.path.join(os.path.expanduser('~'), '.ztalk', 'known_hosts')
+        os.makedirs(os.path.dirname(self.known_hosts_path), exist_ok=True)
+
+    def missing_host_key(self, client, hostname, key):
+        logger.warning(f"Unknown host key for {hostname}, auto-adding to {self.known_hosts_path}")
+        client.get_host_keys().add(hostname, key.get_name(), key)
+        try:
+            client.get_host_keys().save(self.known_hosts_path)
+        except Exception:
+            logger.exception(f"Failed to save known hosts to {self.known_hosts_path}")
+
+
 class SSHConnectionStatus(Enum):
     """Status of an SSH connection"""
     DISCONNECTED = auto()
@@ -85,11 +105,12 @@ class SSHConnection:
             
         self.status = SSHConnectionStatus.CONNECTING
         self.error_message = None
-        
+        logger.info(f"SSH connect to {self.host}:{self.port} as {self.username}")
+
         try:
             # Create SSH client
             self.client = paramiko.SSHClient()
-            self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            self.client.set_missing_host_key_policy(ZTalkHostKeyPolicy())
             
             connect_kwargs = {
                 "hostname": self.host,
@@ -110,6 +131,12 @@ class SSHConnection:
                     self.status = SSHConnectionStatus.FAILED
                     return False
             
+            # Load known hosts before connecting
+            try:
+                self.client.load_host_keys(ZTalkHostKeyPolicy().known_hosts_path)
+            except Exception:
+                pass
+
             # Connect to the SSH server
             self.client.connect(**connect_kwargs)
             
@@ -132,7 +159,10 @@ class SSHConnection:
             self.status = SSHConnectionStatus.CONNECTED
             self.connected_time = time.time()
             self.last_activity = time.time()
-            
+
+            # Clear password from memory after successful connection
+            self.password = None
+
             # Start reader thread
             self.running = True
             self.reader_thread = threading.Thread(target=self._read_output, daemon=True)
@@ -167,6 +197,7 @@ class SSHConnection:
     
     def disconnect(self):
         """Close the SSH connection"""
+        logger.info(f"SSH disconnect from {self.host}:{self.port} as {self.username}")
         self.running = False
         
         # Close channel
@@ -617,6 +648,7 @@ class SSHManager:
         Create a new SSH connection.
         Returns the connection ID.
         """
+        logger.info(f"SSH create_connection to {host}:{port} as {username}")
         connection_id = str(uuid.uuid4())
         connection = SSHConnection(
             connection_id=connection_id,
@@ -632,8 +664,10 @@ class SSHManager:
         
         # Connect if requested
         if auto_connect:
-            connection.connect()
-            
+            if not connection.connect():
+                logger.warning(f"Failed to connect SSH connection: {connection.name} ({connection_id})")
+                return None
+
         logger.info(f"Created SSH connection: {connection.name} ({connection_id})")
         return connection_id
     

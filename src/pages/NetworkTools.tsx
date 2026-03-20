@@ -239,6 +239,10 @@ const NetworkTools: React.FC = () => {
   
   // Apply custom IP configuration
   const applyCustomIpConfig = () => {
+    if (!window.confirm('Are you sure you want to apply this IP configuration? This may disrupt your network connection.')) {
+      return;
+    }
+
     // Validate IP format
     const ipv4Regex = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
     if (!ipv4Regex.test(customIpConfig.ipv4)) {

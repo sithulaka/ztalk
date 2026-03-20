@@ -1,192 +1,261 @@
 # ZTalk
 
-ZTalk is a modern zero-configuration messaging and SSH management application for local networks.
+Zero-configuration peer-to-peer messaging, SSH management, and network tools for local networks. Peers are discovered automatically via mDNS — no manual IP setup required. Chat in real time, manage SSH sessions, run network diagnostics, and optionally spin up a DHCP server on isolated networks.
 
-## Features
+## How It Works
 
-- **Zero-Configuration Networking:** Automatically discovers peers on the local network without any setup
-- **Real-time Messaging:** Chat with peers on your network with support for private, group, and broadcast messages
-- **SSH Connection Management:** Manage multiple SSH connections with a user-friendly interface
-- **Network Diagnostics Tools:** Scan your network, perform latency tests, and manage IP configurations
-- **Dual Interfaces:** Modern React web UI and terminal-based UI options
+ZTalk runs a **Python backend** (Flask) that handles peer discovery, messaging, SSH connections, and networking. A **React frontend** talks to the backend over REST and WebSocket (Socket.IO). The whole thing can also be packaged as an **Electron desktop app**.
 
-## Installation
+```
+┌─────────────────────────────────────────────────────────┐
+│  React Frontend (localhost:3000)                        │
+│  Dashboard │ Chat │ SSH │ Network Tools │ Settings      │
+└──────────────────────┬──────────────────────────────────┘
+                       │ REST + WebSocket (Socket.IO)
+┌──────────────────────▼──────────────────────────────────┐
+│  Flask API Server (localhost:5000)                       │
+│  Auth (Bearer token) │ CSRF │ Rate limiting             │
+└──┬─────────┬──────────┬──────────┬──────────┬───────────┘
+   │         │          │          │          │
+   ▼         ▼          ▼          ▼          ▼
+ Peer     Message    SSH       Network     DHCP
+ Discovery Handler   Manager   Manager     Server
+ (mDNS)   (Fernet)  (Paramiko)            (optional)
+```
 
-### Prerequisites
+### Peer Discovery
 
-- Python 3.8 or higher
-- Node.js (v14 or newer)
-- npm or yarn
+On startup, ZTalk registers itself on the local network using Zeroconf/mDNS (service type `_ztalk._tcp.local.`). Other ZTalk instances on the same LAN are discovered automatically. A background thread monitors peer health and marks stale peers as inactive.
 
-### Quick Installation
+### Messaging
 
-The easiest way to install and run ZTalk is using the provided `run.sh` script:
+Messages travel peer-to-peer over UDP sockets. Three modes: **private** (one-to-one), **group** (named channel), and **broadcast** (all peers). Optional Fernet encryption with per-message random salt (PBKDF2 key derivation). Messages include delivery acknowledgments with retry (up to 3 attempts). Message deduplication prevents duplicates from network retries. History is thread-safe and persisted to the browser's localStorage (capped at 1000 messages).
+
+### SSH Manager
+
+Create and manage multiple simultaneous SSH sessions via Paramiko. Connection profiles can be saved (passwords are never written to disk). Host keys are stored in `~/.ztalk/known_hosts`. All SSH operations are audit-logged (without credentials).
+
+### Network Tools
+
+Detects active network interfaces, scans for devices, and provides diagnostics. Interface names are validated to prevent injection. On the frontend, you can view interface details, monitor bandwidth stats, and apply IP configuration.
+
+### DHCP Server
+
+Optional built-in DHCP server for isolated networks (default `192.168.100.0/24`). Configurable network range and DNS servers. Periodic lease cleanup runs every 5 minutes.
+
+## Project Structure
+
+```
+ztalk/
+├── app.py                  # Flask API server (REST + WebSocket)
+├── main.py                 # Terminal UI entry point (CustomTkinter)
+├── ztalk.py                # Demo/component launcher
+├── run.sh                  # Setup & launch script (venv, deps, checks)
+├── core/
+│   ├── application.py      # Central orchestrator — starts all subsystems
+│   ├── peer_discovery.py   # Zeroconf/mDNS peer discovery (thread-safe)
+│   ├── messaging.py        # Message routing, encryption, ack, dedup
+│   ├── network_manager.py  # Interface detection, scanning, diagnostics
+│   ├── ssh_manager.py      # SSH connections + host key management
+│   └── dhcp_server.py      # Built-in DHCP server with lease cleanup
+├── src/                    # React frontend (TypeScript + Tailwind)
+│   ├── pages/
+│   │   ├── Dashboard.tsx   # Overview: active peers, recent messages, groups
+│   │   ├── Chat.tsx        # Messaging UI with markdown (sanitized)
+│   │   ├── SSH.tsx         # SSH connection management
+│   │   ├── NetworkTools.tsx# Interface viewer, diagnostics
+│   │   └── Settings.tsx    # Username, theme, notification preferences
+│   ├── components/         # Layout, ErrorBoundary
+│   ├── contexts/           # NetworkContext, ThemeContext (3 themes)
+│   └── services/           # Axios API client with error interceptor
+├── public/
+│   ├── electron.js         # Electron main process (CSP, DevTools shortcut)
+│   └── preload.js          # Secure bridge: API client + Socket.IO
+├── ui/                     # Terminal GUI (CustomTkinter)
+│   ├── chat_window.py      # Chat UI with themed colors
+│   ├── ssh_client.py       # SSH terminal UI
+│   ├── terminal_widget.py  # Terminal emulator widget
+│   └── notification.py     # Desktop notifications
+├── utils/                  # SSH, platform, and Windows utilities
+├── examples/               # Demo scripts (chat, SSH, multi-SSH)
+├── tests/                  # pytest test suite (76 tests)
+├── .env.example            # Environment variable template
+├── requirements.txt        # Python runtime dependencies
+└── requirements-dev.txt    # Dev dependencies (pytest, black, flake8, mypy)
+```
+
+## Prerequisites
+
+- Python 3.8+
+- Node.js 14+
+- `python3-tk` (system package, only needed for terminal UI)
+
+## Quick Start
 
 ```bash
-git clone https://github.com/yourusername/ztalk.git
+git clone <repo-url>
 cd ztalk
 ./run.sh
 ```
 
-This script will:
-1. Set up a Python virtual environment
-2. Install Python dependencies
-3. Install npm dependencies if needed
-4. Start the application
+`run.sh` handles everything: creates a Python venv, installs dependencies, checks Node.js version, and launches the app. On exit, background processes are cleaned up automatically via trap.
 
-### Manual Installation
-
-If you prefer to install manually:
-
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/yourusername/ztalk.git
-   cd ztalk
-   ```
-
-2. Set up Python environment and dependencies:
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-   pip install -r requirements.txt
-   pip install flask flask-cors flask-socketio
-   ```
-
-3. Install Node.js dependencies:
-   ```bash
-   npm install
-   ```
-
-## Running the Application
-
-ZTalk can be run in multiple modes:
-
-### Web Interface (Default)
-
-Run both the API server and React frontend:
+### Manual Setup
 
 ```bash
-./run.sh
-# or
-./run.sh web
-# or
-npm run dev
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+npm install
 ```
 
-This will start:
-- Flask API server at `http://localhost:5000`
-- React frontend at `http://localhost:3000`
-
-### Terminal Interface
+Then pick an entry point:
 
 ```bash
-./run.sh terminal
-# or
-python main.py
+python app.py          # API server on localhost:5000
+npm run dev            # API + React dev server (localhost:3000)
+python main.py         # Terminal UI (requires python3-tk)
 ```
 
-### API Server Only
+## Run Modes
+
+| Command | What it does |
+|---------|-------------|
+| `./run.sh` or `./run.sh web` | Flask API (port 5000) + React dev server (port 3000) |
+| `./run.sh terminal` | Terminal GUI via `python main.py` |
+| `./run.sh api` | API server only |
+| `./run.sh demo` | Interactive demo via `python ztalk.py demo` |
+
+### npm Scripts
+
+| Script | Description |
+|--------|-------------|
+| `npm run dev` | API + React dev server together |
+| `npm run dev:electron` | API + Electron dev |
+| `npm run build` | Production React build |
+| `npm run electron:build` | Build Electron desktop app |
+
+## API
+
+All endpoints (except `GET /api`) require a Bearer token in the `Authorization` header. The token is printed to console on startup. State-changing requests (POST/PUT/DELETE) also require an `X-CSRF-Token` header obtained from `GET /api/csrf-token`. Rate limit: 60 requests/minute default, 10/second on message endpoints.
+
+### Authentication
 
 ```bash
-./run.sh api
-# or
-python app.py
+# Get the token from server startup output:
+# API_TOKEN=abc123...
+
+# Use it in requests:
+curl -H "Authorization: Bearer $TOKEN" http://localhost:5000/api/peers/active
+
+# For POST/PUT/DELETE, also get a CSRF token first:
+CSRF=$(curl -s -H "Authorization: Bearer $TOKEN" http://localhost:5000/api/csrf-token | jq -r .csrfToken)
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "X-CSRF-Token: $CSRF" \
+     -H "Content-Type: application/json" \
+     -d '{"content":"hello"}' http://localhost:5000/api/messages/broadcast
 ```
 
-### Examples
+### Endpoints
 
-Run any of the included examples:
+| Area | Endpoints |
+|------|-----------|
+| Health | `GET /api` (no auth) |
+| Auth | `GET /api/csrf-token` |
+| User | `GET/POST /api/user/username` |
+| Peers | `GET /api/peers/active`, `GET /api/peers/all` |
+| Messages | `POST /api/messages/private/<id>`, `POST /api/messages/broadcast`, `POST /api/messages/group/<id>`, `GET /api/messages/history?limit=50&offset=0`, `DELETE /api/messages/clear` |
+| Network | `GET /api/network/interfaces`, `GET /api/network/interfaces/<name>`, `POST /api/network/interfaces/<name>/config`, `GET /api/network/scan` |
+| DHCP | `GET /api/dhcp/status`, `POST /api/dhcp/config`, `GET /api/dhcp/leases` |
+| SSH | `POST /api/ssh/connect`, `GET /api/ssh/connections`, `DELETE /api/ssh/connections/<id>`, CRUD on `/api/ssh/profiles` |
+| Groups | `POST /api/groups`, `POST/DELETE /api/groups/<id>/members/<peer_id>`, `DELETE /api/groups/<id>` |
+
+### WebSocket Events (Socket.IO)
+
+| Event | Payload | Description |
+|-------|---------|-------------|
+| `peer_event` | `{event, peerId, name, ipAddress}` | Peer discovered/lost |
+| `message_event` | `{messageId, type, content, senderId, senderName}` | New message |
+| `network_change` | `{event, interfaceName, newIp, oldIp}` | Interface added/changed/removed |
+| `dhcp_event` | `{event, enabled, network}` | DHCP config changed |
+| `ssh_event` | `{event, connectionId, host, port}` | SSH connected/disconnected |
+
+## Configuration
+
+ZTalk stores its configuration in `~/.ztalk/`:
+
+| File | Purpose |
+|------|---------|
+| `config.json` | App settings (encrypted at rest with Fernet) |
+| `known_hosts` | SSH host key fingerprints |
+| `logs/ztalk.log` | Rotating log file (5 MB, 3 backups) |
+
+### Environment Variables
+
+Copy `.env.example` to `.env` to customize:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ZTALK_API_PORT` | `5000` | Flask API port |
+| `ZTALK_LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
+| `REACT_APP_API_URL` | `http://localhost:5000/api` | API URL for frontend |
+
+## Frontend
+
+The React app has three themes: **light**, **dark**, and **dark blue** (auto-detects OS preference). Respects `prefers-reduced-motion` for accessibility. All interactive elements have ARIA labels and keyboard navigation.
+
+### Pages
+
+- **Dashboard** — Active peers count, recent messages, quick actions to navigate
+- **Chat** — Select a peer or group, send messages with sanitized Markdown rendering
+- **SSH** — Connect to hosts, manage saved profiles, terminal interface
+- **Network Tools** — View interfaces, bandwidth stats, apply IP configuration
+- **Settings** — Change username, select theme, toggle notifications
+
+## Security
+
+- Bearer token auth on all API endpoints (token generated on startup)
+- CSRF tokens required for state-changing requests
+- Rate limiting (60/min default, 10/sec on messaging)
+- Message content validated (max 10,000 chars, null bytes stripped)
+- Socket.IO CORS restricted to `localhost:3000`
+- Electron Content Security Policy headers
+- SSH host keys verified against `~/.ztalk/known_hosts`
+- SSH passwords cleared from memory after connection, never saved to disk
+- Config file encrypted at rest (Fernet + PBKDF2)
+- Subprocess calls use list form (no shell injection)
+- Markdown rendering restricted to safe HTML elements
+- Interface names validated against regex before use in commands
+
+## Testing
 
 ```bash
-./run.sh demo
-# or
-python ztalk.py demo
+source .venv/bin/activate
+pip install -r requirements-dev.txt
+pytest tests/ -v
 ```
 
-## Entry Points
+76 tests covering API auth, CSRF, input validation, message handling, peer discovery, SSH security, and infrastructure.
 
-ZTalk has multiple entry points depending on your needs:
-
-1. **app.py** - The Flask API server connecting the React frontend with the ZTalk backend
-2. **main.py** - The terminal UI version of ZTalk
-3. **ztalk.py** - A launcher script for running different examples/components
-
-## Building for Production
+## Building the Desktop App
 
 ```bash
 npm run electron:build
 ```
 
-This will create platform-specific installers in the `dist` directory.
+Creates platform-specific installers in `dist/`. DevTools can be toggled with `Ctrl+Shift+I` (or `Cmd+Option+I` on Mac).
 
-## Publishing to GitHub
+## Tech Stack
 
-To publish ZTalk to GitHub:
-
-1. Create a new GitHub repository:
-   ```bash
-   git init  # If not already a git repository
-   git add .
-   git commit -m "Initial commit of ZTalk"
-   ```
-
-2. Connect to your GitHub repository:
-   ```bash
-   git remote add origin https://github.com/yourusername/ztalk.git
-   ```
-
-3. Push your code:
-   ```bash
-   git push -u origin main  # or master depending on your branch name
-   ```
-
-### Creating a Release
-
-1. Tag your release version:
-   ```bash
-   git tag -a v1.0.0 -m "ZTalk version 1.0.0"
-   git push origin v1.0.0
-   ```
-
-2. On GitHub, go to Releases and create a new release from your tag
-
-3. Include release notes and any pre-built binaries if you have them
-
-## Architecture
-
-ZTalk is built with modern web technologies:
-
-- **Frontend:** React, TypeScript, TailwindCSS
-- **Backend:** Flask API, Python core, Electron integration
-- **Networking:** socket.io, zeroconf/bonjour
-- **SSH:** paramiko (Python), ssh2 (Node.js)
-
-## Troubleshooting
-
-### API Server Issues
-
-If you encounter issues with the Flask API server related to Werkzeug:
-
-```
-RuntimeError: The Werkzeug web server is not designed to run in production.
-```
-
-This is fixed in the latest version by adding `allow_unsafe_werkzeug=True`. If you're still seeing this error, run:
-
-```bash
-sed -i 's/socketio.run(app, host='\''0.0.0.0'\'', port=5000, debug=True, use_reloader=False)/socketio.run(app, host='\''0.0.0.0'\'', port=5000, debug=True, use_reloader=False, allow_unsafe_werkzeug=True)/g' app.py
-```
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+| Layer | Technologies |
+|-------|-------------|
+| Frontend | React 18, TypeScript, Tailwind CSS, DaisyUI |
+| Backend | Flask, Flask-SocketIO, Flask-Limiter |
+| Desktop | Electron 25, electron-builder |
+| Networking | Zeroconf/mDNS, Socket.IO, Axios |
+| SSH | Paramiko |
+| Encryption | cryptography (Fernet, PBKDF2) |
+| Testing | pytest, pytest-cov |
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details. 
+MIT

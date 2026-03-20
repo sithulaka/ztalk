@@ -1,4 +1,50 @@
 const { contextBridge, ipcRenderer } = require('electron');
+const axios = require('axios');
+const { io } = require('socket.io-client');
+
+// API URL for connecting to Flask backend
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+
+// Create API client
+const apiClient = axios.create({
+  baseURL: API_URL,
+  headers: {
+    'Content-Type': 'application/json',
+  },
+});
+
+// Create WebSocket connection (will be initialized later)
+let socket = null;
+
+// Helper to create API methods
+// GET/DELETE: createApiMethod('GET', '/endpoint', transformFn)(config)
+// POST/PUT: createApiMethod('POST', '/endpoint', transformFn)(data, config)
+const createApiMethod = (method, endpoint, transformFn) => {
+  return async (...args) => {
+    try {
+      let response;
+
+      if (method === 'GET') {
+        // axios.get(url, config) - args[0] is config (params, headers, etc.)
+        response = await apiClient.get(endpoint, args[0]);
+      } else if (method === 'POST') {
+        // axios.post(url, data, config) - args[0] is data, args[1] is config
+        response = await apiClient.post(endpoint, args[0], args[1]);
+      } else if (method === 'PUT') {
+        // axios.put(url, data, config) - args[0] is data, args[1] is config
+        response = await apiClient.put(endpoint, args[0], args[1]);
+      } else if (method === 'DELETE') {
+        // axios.delete(url, config) - args[0] is config
+        response = await apiClient.delete(endpoint, args[0]);
+      }
+
+      return transformFn ? transformFn(response.data) : response.data;
+    } catch (error) {
+      console.error(`API error (${method} ${endpoint}):`, error);
+      throw error;
+    }
+  };
+};
 
 // Expose protected methods that allow the renderer process to use
 // the ipcRenderer without exposing the entire object
@@ -59,4 +105,171 @@ contextBridge.exposeInMainWorld(
       }
     }
   }
-); 
+);
+
+// Expose the API methods to the renderer process
+contextBridge.exposeInMainWorld('api', {
+  // User APIs
+  user: {
+    getUsername: createApiMethod('GET', '/user/username', data => data.username),
+    setUsername: (username) => createApiMethod('POST', '/user/username')({ username }),
+  },
+
+  // Peer APIs
+  peers: {
+    getActivePeers: createApiMethod('GET', '/peers/active'),
+    getAllPeers: createApiMethod('GET', '/peers/all'),
+  },
+
+  // Messaging APIs
+  messages: {
+    sendPrivate: (peerId, content) =>
+      createApiMethod('POST', `/messages/private/${peerId}`)({ content }),
+    broadcast: (content) =>
+      createApiMethod('POST', '/messages/broadcast')({ content }),
+    sendToGroup: (groupId, content) =>
+      createApiMethod('POST', `/messages/group/${groupId}`)({ content }),
+    getHistory: (peerId, groupId, limit) => {
+      const params = {};
+      if (peerId) params.peerId = peerId;
+      if (groupId) params.groupId = groupId;
+      if (limit) params.limit = limit.toString();
+      return createApiMethod('GET', '/messages/history')({ params });
+    },
+    clearHistory: (peerId, groupId) => {
+      const params = {};
+      if (peerId) params.peerId = peerId;
+      if (groupId) params.groupId = groupId;
+      return createApiMethod('DELETE', '/messages/clear')({ params });
+    }
+  },
+
+  // Network APIs
+  network: {
+    getInterfaces: createApiMethod('GET', '/network/interfaces'),
+    getInterfaceDetails: (interfaceName) =>
+      createApiMethod('GET', `/network/interfaces/${interfaceName}`)(),
+    configureInterface: (interfaceName, config) =>
+      createApiMethod('POST', `/network/interfaces/${interfaceName}/config`)(config),
+    scanNetwork: createApiMethod('GET', '/network/scan'),
+  },
+
+  // DHCP server APIs
+  dhcp: {
+    getStatus: createApiMethod('GET', '/dhcp/status'),
+    configure: (enabled, network, serverIp) =>
+      createApiMethod('POST', '/dhcp/config')({ enabled, network, serverIp }),
+    getLeases: createApiMethod('GET', '/dhcp/leases'),
+  },
+
+  // SSH APIs
+  ssh: {
+    connect: (host, port, username, password, keyPath, name) =>
+      createApiMethod('POST', '/ssh/connect')({ host, port, username, password, keyPath, name }),
+    getConnection: (connectionId) =>
+      createApiMethod('GET', `/ssh/connections/${connectionId}`)(),
+    getAllConnections: createApiMethod('GET', '/ssh/connections'),
+    closeConnection: (connectionId) =>
+      createApiMethod('DELETE', `/ssh/connections/${connectionId}`)(),
+    saveProfile: (name, host, port, username, keyPath) =>
+      createApiMethod('POST', '/ssh/profiles')({ name, host, port, username, keyPath }),
+    deleteProfile: (profileId) =>
+      createApiMethod('DELETE', `/ssh/profiles/${profileId}`)(),
+    getProfile: (profileId) =>
+      createApiMethod('GET', `/ssh/profiles/${profileId}`)(),
+    getAllProfiles: createApiMethod('GET', '/ssh/profiles'),
+    connectFromProfile: (profileId, password) =>
+      createApiMethod('POST', `/ssh/profiles/${profileId}/connect`)({ password }),
+  },
+
+  // Group APIs
+  groups: {
+    create: (groupName, peerIds) =>
+      createApiMethod('POST', '/groups')({ groupName, peerIds }),
+    addMember: (groupId, peerId) =>
+      createApiMethod('POST', `/groups/${groupId}/members/${peerId}`)(),
+    removeMember: (groupId, peerId) =>
+      createApiMethod('DELETE', `/groups/${groupId}/members/${peerId}`)(),
+    delete: (groupId) =>
+      createApiMethod('DELETE', `/groups/${groupId}`)(),
+  },
+  
+  // WebSocket connection
+  socket: {
+    connect: (callbacks) => {
+      // If socket is already connected, disconnect first
+      if (socket) {
+        socket.disconnect();
+      }
+      
+      // Create socket connection
+      socket = io(process.env.REACT_APP_SOCKET_URL || 'http://localhost:5000', {
+        transports: ['websocket'],
+        reconnection: true,
+        reconnectionDelay: 1000,
+        reconnectionDelayMax: 5000,
+        reconnectionAttempts: 10,
+      });
+      
+      // Set up event handlers
+      socket.on('connect', () => {
+        console.log('WebSocket connected');
+        if (callbacks && callbacks.onConnect) {
+          callbacks.onConnect();
+        }
+      });
+      
+      socket.on('disconnect', () => {
+        console.log('WebSocket disconnected');
+        if (callbacks && callbacks.onDisconnect) {
+          callbacks.onDisconnect();
+        }
+      });
+      
+      socket.on('error', (error) => {
+        console.error('WebSocket error:', error);
+        if (callbacks && callbacks.onError) {
+          callbacks.onError(error);
+        }
+      });
+      
+      // Set up event handlers for specific events
+      if (callbacks) {
+        if (callbacks.onPeerEvent) {
+          socket.on('peer_event', callbacks.onPeerEvent);
+        }
+        
+        if (callbacks.onMessageEvent) {
+          socket.on('message_event', callbacks.onMessageEvent);
+        }
+        
+        if (callbacks.onNetworkChange) {
+          socket.on('network_change', callbacks.onNetworkChange);
+        }
+        
+        if (callbacks.onDHCPEvent) {
+          socket.on('dhcp_event', callbacks.onDHCPEvent);
+        }
+        
+        if (callbacks.onSSHEvent) {
+          socket.on('ssh_event', callbacks.onSSHEvent);
+        }
+      }
+      
+      return true;
+    },
+    
+    disconnect: () => {
+      if (socket) {
+        socket.disconnect();
+        socket = null;
+        return true;
+      }
+      return false;
+    },
+    
+    isConnected: () => {
+      return socket && socket.connected;
+    },
+  }
+}); 

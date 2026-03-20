@@ -6,6 +6,7 @@ interface ThemeContextType {
   theme: Theme;
   toggleTheme: () => void;
   setTheme: (theme: Theme) => void;
+  prefersReducedMotion: boolean;
 }
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
@@ -89,7 +90,19 @@ export const ThemeProvider: React.FC<{children: React.ReactNode}> = ({ children 
     return () => mediaQuery.removeEventListener('change', handleChange);
   }, []);
 
-  const value = { theme, toggleTheme, setTheme };
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(
+    () => window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  );
+
+  // Listen for reduced motion preference changes
+  useEffect(() => {
+    const mediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const handleChange = () => setPrefersReducedMotion(mediaQuery.matches);
+    mediaQuery.addEventListener('change', handleChange);
+    return () => mediaQuery.removeEventListener('change', handleChange);
+  }, []);
+
+  const value = { theme, toggleTheme, setTheme, prefersReducedMotion };
   
   return (
     <ThemeContext.Provider value={value}>
