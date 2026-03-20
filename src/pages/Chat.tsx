@@ -266,7 +266,7 @@ const Chat: React.FC = () => {
                     <div className="prose dark:prose-invert prose-sm max-w-none">
                       <ReactMarkdown
                         allowedElements={['p','strong','em','code','pre','ul','ol','li','a','br','h1','h2','h3','blockquote']}
-                        components={{ a: ({node, ...props}) => <a {...props} target="_blank" rel="noopener noreferrer" /> }}
+                        components={{ a: ({node, ...props}) => <a {...props} target="_blank" rel="noopener noreferrer">{props.children || 'link'}</a> }}
                       >{msg.content}</ReactMarkdown>
                     </div>
                     <div className="text-xs text-gray-500 dark:text-gray-400 text-right mt-1">
