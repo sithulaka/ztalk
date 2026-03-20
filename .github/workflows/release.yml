@@ -26,6 +26,9 @@ jobs:
       - name: Build React app
         run: npm run build
 
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y rpm
+
       - name: Build Electron packages (Linux)
         run: npx electron-builder --linux deb rpm AppImage --publish never
         env:

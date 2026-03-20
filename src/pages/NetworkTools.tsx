@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import Layout from '../components/Layout';
 import { toast } from 'react-toastify';
-import { ArrowPathIcon, ServerIcon, SignalIcon, ComputerDesktopIcon } from '@heroicons/react/24/outline';
+import { ArrowPathIcon, SignalIcon } from '@heroicons/react/24/outline';
 
 interface NetworkInterface {
   name: string;
@@ -53,15 +53,16 @@ const NetworkTools: React.FC = () => {
   // Fetch network interfaces on mount
   useEffect(() => {
     fetchNetworkInterfaces();
-    
+
     // Refresh every 30 seconds
     const interval = setInterval(() => {
       if (!isScanning && !isPinging) {
         fetchNetworkInterfaces();
       }
     }, 30000);
-    
+
     return () => clearInterval(interval);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isScanning, isPinging]);
   
   // Fetch network interfaces from the Electron backend
