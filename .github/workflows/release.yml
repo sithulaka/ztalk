@@ -4,12 +4,33 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.0.0)'
+        required: true
+        default: 'v1.0.0'
 
 permissions:
   contents: write
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          fi
+
   build-linux:
+    needs: prepare
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,6 +46,8 @@ jobs:
 
       - name: Build React app
         run: npm run build
+        env:
+          CI: false
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y rpm
@@ -45,6 +68,7 @@ jobs:
           if-no-files-found: error
 
   build-windows:
+    needs: prepare
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -60,6 +84,8 @@ jobs:
 
       - name: Build React app
         run: npm run build
+        env:
+          CI: false
 
       - name: Build Electron packages (Windows)
         run: npx electron-builder --win nsis --publish never
@@ -74,6 +100,7 @@ jobs:
           if-no-files-found: error
 
   build-macos:
+    needs: prepare
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -89,6 +116,8 @@ jobs:
 
       - name: Build React app
         run: npm run build
+        env:
+          CI: false
 
       - name: Build Electron packages (macOS)
         run: npx electron-builder --mac dmg --publish never
@@ -104,7 +133,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: [build-linux, build-windows, build-macos]
+    needs: [prepare, build-linux, build-windows, build-macos]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -120,7 +149,8 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: ZTalk ${{ github.ref_name }}
+          tag_name: ${{ needs.prepare.outputs.version }}
+          name: ZTalk ${{ needs.prepare.outputs.version }}
           draft: false
           prerelease: false
           files: |
@@ -130,7 +160,7 @@ jobs:
             dist-all/windows-builds/*.exe
             dist-all/macos-builds/*.dmg
           body: |
-            ## ZTalk ${{ github.ref_name }}
+            ## ZTalk ${{ needs.prepare.outputs.version }}
 
             A zero-configuration peer-to-peer messaging, SSH management, and network tools application for local area networks. Built with Electron + React + Python (Flask).
 
